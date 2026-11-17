@@ -21,6 +21,7 @@ import {
   DollarSign,
   Key,
   Eye,
+  EyeOff,
   LogOut,
   RefreshCw,
   Building,
@@ -142,6 +143,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
   // User / Admin Registration Modal State
   const [showRegisterAdminModal, setShowRegisterAdminModal] = useState(false);
+  const [showNewAdminPassword, setShowNewAdminPassword] = useState(false);
   const [isRegisteringAdmin, setIsRegisteringAdmin] = useState(false);
   const [newAdminForm, setNewAdminForm] = useState<{
     fullName: string;
@@ -519,6 +521,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       const created = await api.registerAdminUser(token, newAdminForm);
       setAdminUsers((prev) => [created, ...prev]);
       setShowRegisterAdminModal(false);
+      setShowNewAdminPassword(false);
       setNewAdminForm({
         fullName: '',
         email: '',
@@ -3695,17 +3698,33 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
                   Password (min 6 chars) <span className="text-red-500">*</span>
                 </label>
-                <input
-                  type="password"
-                  name="new-password"
-                  autoComplete="new-password"
-                  required
-                  minLength={6}
-                  value={newAdminForm.password}
-                  onChange={(e) => setNewAdminForm({ ...newAdminForm, password: e.target.value })}
-                  placeholder="Strong password..."
-                  className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-300"
-                />
+                <div className="relative">
+                  <input
+                    type={showNewAdminPassword ? 'text' : 'password'}
+                    name="new-password"
+                    autoComplete="new-password"
+                    required
+                    minLength={6}
+                    value={newAdminForm.password}
+                    onChange={(e) => setNewAdminForm({ ...newAdminForm, password: e.target.value })}
+                    placeholder="Strong password..."
+                    className="w-full pl-3 pr-10 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewAdminPassword((prev) => !prev)}
+                    aria-label={showNewAdminPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showNewAdminPassword}
+                    title={showNewAdminPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-[#061B45] hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-[#FF7900]/50 transition-colors touch-manipulation"
+                  >
+                    {showNewAdminPassword ? (
+                      <EyeOff className="w-4 h-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="w-4 h-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">

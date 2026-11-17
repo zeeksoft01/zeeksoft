@@ -21,6 +21,8 @@ import {
   BarChart3,
   KeyRound,
   RefreshCw,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import {
   SiteSettings,
@@ -122,18 +124,35 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [showFullDashboard, setShowFullDashboard] = useState(false);
 
+  // Password visibility toggles (display-only UI state; resets automatically on context switch)
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false);
+
   useEffect(() => {
     if (isOpen) {
       setAuthTab(initialMode);
       setErrorMessage('');
       setNoticeMessage('');
       setUseMasterKey(false);
+      setShowLoginPassword(false);
+      setShowRegisterPassword(false);
+      setShowNewPassword(false);
+      setShowConfirmNewPassword(false);
       if (initialMode === 'reset_password') {
         setResetEmail(initialResetEmail || '');
         setResetCodeOrToken(initialResetToken || '');
       }
     }
   }, [isOpen, initialMode, initialResetEmail, initialResetToken]);
+
+  useEffect(() => {
+    setShowLoginPassword(false);
+    setShowRegisterPassword(false);
+    setShowNewPassword(false);
+    setShowConfirmNewPassword(false);
+  }, [authTab, useMasterKey]);
 
   const loadAffiliatePortal = async (tok: string) => {
     setPortalLoading(true);
@@ -183,6 +202,7 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
         affiliate: res.affiliate,
       });
       setLoginPassword('');
+      setShowLoginPassword(false);
       if (res.affiliate) {
         setPortalAffiliate(res.affiliate);
       }
@@ -195,6 +215,7 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
         const targetEmail = (err.email || loginEmail || '').trim().toLowerCase();
         setPendingVerifyEmail(targetEmail);
         setVerificationCode('');
+        setShowLoginPassword(false);
         setAuthTab('verify_email');
         setNoticeMessage(
           `Your affiliate email (${targetEmail}) requires verification before sign-in. Enter the 6-digit code sent to your inbox or click Resend Code.`
@@ -227,6 +248,7 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
       });
 
       setPassword('');
+      setShowRegisterPassword(false);
       setMarketingConsent(false);
 
       if (res.requiresVerification || !res.token || !res.user) {
@@ -1052,34 +1074,66 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
                     New Password (min 6 chars) <span className="text-red-500">*</span>
                   </label>
-                  <input
-                    type="password"
-                    name="newPassword"
-                    autoComplete="new-password"
-                    required
-                    minLength={6}
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter your new password"
-                    className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-300"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showNewPassword ? 'text' : 'password'}
+                      name="newPassword"
+                      autoComplete="new-password"
+                      required
+                      minLength={6}
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="Enter your new password"
+                      className="w-full pl-3 pr-10 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword((prev) => !prev)}
+                      aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+                      aria-pressed={showNewPassword}
+                      title={showNewPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-[#061B45] hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-[#FF7900]/50 transition-colors touch-manipulation"
+                    >
+                      {showNewPassword ? (
+                        <EyeOff className="w-4 h-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="w-4 h-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div>
                   <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
                     Confirm New Password <span className="text-red-500">*</span>
                   </label>
-                  <input
-                    type="password"
-                    name="confirmPassword"
-                    autoComplete="new-password"
-                    required
-                    minLength={6}
-                    value={confirmNewPassword}
-                    onChange={(e) => setConfirmNewPassword(e.target.value)}
-                    placeholder="Re-enter your new password"
-                    className="w-full px-3 py-2.5 text-xs rounded-xl border border-slate-300"
-                  />
+                  <div className="relative">
+                    <input
+                      type={showConfirmNewPassword ? 'text' : 'password'}
+                      name="confirmPassword"
+                      autoComplete="new-password"
+                      required
+                      minLength={6}
+                      value={confirmNewPassword}
+                      onChange={(e) => setConfirmNewPassword(e.target.value)}
+                      placeholder="Re-enter your new password"
+                      className="w-full pl-3 pr-10 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmNewPassword((prev) => !prev)}
+                      aria-label={showConfirmNewPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      aria-pressed={showConfirmNewPassword}
+                      title={showConfirmNewPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-[#061B45] hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-[#FF7900]/50 transition-colors touch-manipulation"
+                    >
+                      {showConfirmNewPassword ? (
+                        <EyeOff className="w-4 h-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="w-4 h-4" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <button
@@ -1163,12 +1217,12 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
                   </div>
                   <div className="relative">
                     {useMasterKey ? (
-                      <Key className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <Key className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     ) : (
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                     )}
                     <input
-                      type="password"
+                      type={showLoginPassword ? 'text' : 'password'}
                       name={useMasterKey ? 'adminKey' : 'password'}
                       autoComplete={useMasterKey ? 'off' : 'current-password'}
                       required
@@ -1179,8 +1233,22 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
                           ? 'Enter ADMIN_SECRET_KEY from .env...'
                           : 'Enter your account password'
                       }
-                      className="w-full pl-9 pr-3 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
+                      className="w-full pl-9 pr-10 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginPassword((prev) => !prev)}
+                      aria-label={showLoginPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showLoginPassword}
+                      title={showLoginPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-[#061B45] hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-[#FF7900]/50 transition-colors touch-manipulation"
+                    >
+                      {showLoginPassword ? (
+                        <EyeOff className="w-4 h-4" aria-hidden="true" />
+                      ) : (
+                        <Eye className="w-4 h-4" aria-hidden="true" />
+                      )}
+                    </button>
                   </div>
                 </div>
 
@@ -1297,17 +1365,33 @@ export const AuthPortalModal: React.FC<AuthPortalModalProps> = ({
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
                       Password (min 6 chars) <span className="text-red-500">*</span>
                     </label>
-                    <input
-                      type="password"
-                      name="newPassword"
-                      autoComplete="new-password"
-                      required
-                      minLength={6}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Create a strong password"
-                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showRegisterPassword ? 'text' : 'password'}
+                        name="newPassword"
+                        autoComplete="new-password"
+                        required
+                        minLength={6}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Create a strong password"
+                        className="w-full pl-3 pr-10 py-2 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-[#FF7900]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegisterPassword((prev) => !prev)}
+                        aria-label={showRegisterPassword ? 'Hide password' : 'Show password'}
+                        aria-pressed={showRegisterPassword}
+                        title={showRegisterPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-slate-400 hover:text-[#061B45] hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-[#FF7900]/50 transition-colors touch-manipulation"
+                      >
+                        {showRegisterPassword ? (
+                          <EyeOff className="w-4 h-4" aria-hidden="true" />
+                        ) : (
+                          <Eye className="w-4 h-4" aria-hidden="true" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
