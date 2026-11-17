@@ -1,10 +1,38 @@
 import nodemailer from 'nodemailer';
 import { env } from '../config/env';
-import { EmailBrandingConfig, EmailSendLog, Order, SiteSettings } from '../types';
+import {
+  Affiliate,
+  AffiliateCommission,
+  EmailBrandingConfig,
+  EmailSendLog,
+  Order,
+  PaymentTransaction,
+  SiteSettings,
+} from '../types';
 import { EmailSendLogModel, OrderModel, SiteSettingsModel } from '../models';
 import { DEFAULT_EMAIL_BRANDING, getInitialSettings } from '../utils/seedData';
 import { auditService } from './audit.service';
 import { isSafeHttpUrl, sanitizeRichHtml } from '../utils/security';
+
+const formatEmailDateTime = (isoDate?: string): string => {
+  const date = isoDate ? new Date(isoDate) : new Date();
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  try {
+    const formatted = new Intl.DateTimeFormat('en-NG', {
+      timeZone: 'Africa/Lagos',
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(safeDate);
+    return `${formatted} (WAT)`;
+  } catch {
+    return `${safeDate.toISOString().replace('T', ' ').substring(0, 19)} UTC`;
+  }
+};
 
 interface EmailPayload {
   to: string;
@@ -70,11 +98,37 @@ export const personalizeTemplate = (template: string, fullName?: string): string
     .replace(/\{\{\s*(fullName|name)\s*\}\}/gi, displayFull);
 };
 
+let runtimeAppUrl = '';
+
+const isPlaceholderOrLegacyUrl = (raw?: string): boolean => {
+  const val = (raw || '').trim().toLowerCase();
+  if (!val) return true;
+  if (val.includes('my_app_url')) return true;
+  if (/^https?:\/\/(www\.)?zeeksoftwares\.com(\/|$)/i.test(val)) return true;
+  return false;
+};
+
+const isLocalhostUrl = (raw?: string): boolean =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test((raw || '').trim());
+
+export const setRuntimeAppUrl = (origin?: string): void => {
+  const clean = (origin || '').trim().replace(/\/$/, '');
+  if (!clean || !/^https?:\/\//i.test(clean)) return;
+  if (isLocalhostUrl(clean) && runtimeAppUrl && !isLocalhostUrl(runtimeAppUrl)) return;
+  runtimeAppUrl = clean;
+};
+
 export const getPublicAppUrl = (): string => {
-  if (env.appUrl && !env.appUrl.includes('MY_APP_URL')) {
-    return env.appUrl.replace(/\/$/, '');
+  const configured = (env.appUrl || '').trim().replace(/\/$/, '');
+  if (configured && !isPlaceholderOrLegacyUrl(configured)) {
+    if (!isLocalhostUrl(configured) || !runtimeAppUrl) {
+      return configured;
+    }
   }
-  return 'http://localhost:3000';
+  if (runtimeAppUrl && !isPlaceholderOrLegacyUrl(runtimeAppUrl)) {
+    return runtimeAppUrl;
+  }
+  return configured || 'http://localhost:3000';
 };
 
 const resolveAbsoluteUrl = (rawUrl: string, baseUrl: string): string => {
@@ -121,7 +175,12 @@ export const buildBrandedEmailContent = async (
 ): Promise<{ subject: string; html: string; text: string }> => {
   const settings = await loadBrandingSettings(opts.settings);
   const appBase = getPublicAppUrl();
-  const websiteUrl = resolveAbsoluteUrl(settings.emailBranding?.websiteUrl || appBase, appBase);
+  const configuredSiteUrl = (settings.emailBranding?.websiteUrl || '').trim();
+  const websiteUrl =
+    isPlaceholderOrLegacyUrl(configuredSiteUrl) ||
+    (isLocalhostUrl(configuredSiteUrl) && !isLocalhostUrl(appBase))
+      ? appBase
+      : resolveAbsoluteUrl(configuredSiteUrl, appBase);
   const storeName = settings.storeName || 'Zeek Softwares';
   const primaryColor = settings.primaryColor || '#061B45';
   const accentColor = settings.accentColor || '#FF7900';
@@ -910,28 +969,36 @@ export const emailService = {
     amount: number;
     bankName: string;
     maskedAccount: string;
+    accountName?: string;
     reference: string;
     transferReference?: string;
+    processedAt?: string;
   }) {
+    const paidAt = (data.processedAt || new Date().toISOString()).replace('T', ' ').substring(0, 19);
+    const txRef = data.transferReference || data.reference;
     const bodyHtml = `
-      <p>Your affiliate withdrawal has been successfully processed!</p>
+      <p>Good news! Your affiliate withdrawal request has been <strong>approved and processed successfully</strong>.</p>
       <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;padding:14px;margin:12px 0;">
         <p style="margin:0 0 6px;"><strong>Withdrawal Amount:</strong> ₦${data.amount.toLocaleString('en-NG')}</p>
-        <p style="margin:0 0 6px;"><strong>Bank:</strong> ${escapeHtml(data.bankName)}</p>
-        <p style="margin:0 0 6px;"><strong>Account:</strong> ${escapeHtml(data.maskedAccount)}</p>
-        <p style="margin:0;"><strong>Transaction Reference:</strong> ${escapeHtml(
-          data.transferReference || data.reference
-        )}</p>
+        <p style="margin:0 0 6px;"><strong>Request ID:</strong> ${escapeHtml(data.reference)}</p>
+        <p style="margin:0 0 6px;"><strong>Transaction Reference:</strong> ${escapeHtml(txRef)}</p>
+        <p style="margin:0 0 6px;"><strong>Bank Name:</strong> ${escapeHtml(data.bankName)}</p>
+        <p style="margin:0 0 6px;"><strong>Account Number:</strong> ${escapeHtml(data.maskedAccount)}</p>
+        ${data.accountName ? `<p style="margin:0 0 6px;"><strong>Account Name:</strong> ${escapeHtml(data.accountName)}</p>` : ''}
+        <p style="margin:0;"><strong>Date & Time:</strong> ${escapeHtml(paidAt)}</p>
       </div>
+      <p><strong>Next Step:</strong> Please check your bank account balance to confirm receipt of your ₦${data.amount.toLocaleString('en-NG')} payout.</p>
       <p>Thank you for promoting Zeek Softwares.</p>
     `;
 
     return this.sendBrandedEmail({
       to: data.affiliateEmail,
       recipientName: data.affiliateName,
-      subject: 'Your Affiliate Withdrawal Was Successful — Zeek Softwares',
+      subject: `Affiliate Withdrawal Approved & Paid (₦${data.amount.toLocaleString('en-NG')}) — Zeek Softwares`,
       greeting: `Hello ${data.affiliateName},`,
       bodyHtml,
+      ctaLabel: 'Open Affiliate Dashboard',
+      ctaUrl: getPublicAppUrl(),
       isPromotional: false,
     });
   },
@@ -944,21 +1011,141 @@ export const emailService = {
     reason: string;
   }) {
     const bodyHtml = `
-      <p>Your recent withdrawal request could not be approved at this time.</p>
+      <p>Your recent withdrawal request was declined by the administrator.</p>
       <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:14px;margin:12px 0;">
         <p style="margin:0 0 6px;"><strong>Withdrawal Reference:</strong> ${escapeHtml(data.reference)}</p>
         <p style="margin:0 0 6px;"><strong>Amount:</strong> ₦${data.amount.toLocaleString('en-NG')}</p>
-        <p style="margin:0;"><strong>Reason:</strong> ${escapeHtml(data.reason)}</p>
+        <p style="margin:0;"><strong>Decline Reason:</strong> ${escapeHtml(data.reason)}</p>
       </div>
-      <p>Your reserved balance has been safely returned to your available affiliate balance.</p>
+      <p>Your reserved balance of ₦${data.amount.toLocaleString('en-NG')} has been safely returned to your available affiliate wallet balance.</p>
     `;
 
     return this.sendBrandedEmail({
       to: data.affiliateEmail,
       recipientName: data.affiliateName,
-      subject: 'Update on Your Affiliate Withdrawal — Zeek Softwares',
+      subject: `Update on Your Affiliate Withdrawal (${data.reference}) — Zeek Softwares`,
       greeting: `Hello ${data.affiliateName},`,
       bodyHtml,
+      ctaLabel: 'Review Affiliate Wallet',
+      ctaUrl: getPublicAppUrl(),
+      isPromotional: false,
+    });
+  },
+
+  async sendAffiliateVerificationEmail(data: {
+    fullName: string;
+    email: string;
+    code: string;
+    expiresInMinutes?: number;
+  }) {
+    const mins = data.expiresInMinutes || 20;
+    const bodyHtml = `
+      <p>Thank you for registering to become a <strong>Zeek Softwares Affiliate Partner</strong>.</p>
+      <p>To confirm ownership of this email address and activate your affiliate account, enter the verification code below:</p>
+      <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:12px;padding:18px;margin:16px 0;text-align:center;">
+        <span style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#64748B;margin-bottom:8px;">
+          Affiliate Email Verification Code
+        </span>
+        <span style="font-family:monospace;font-size:32px;font-weight:900;letter-spacing:0.2em;color:#061B45;">
+          ${escapeHtml(data.code)}
+        </span>
+      </div>
+      <p style="font-size:13px;color:#475569;">This code expires in <strong>${mins} minutes</strong>. Unverified accounts cannot access affiliate links, commissions, or withdrawals.</p>
+    `;
+
+    return this.sendBrandedEmail({
+      to: data.email,
+      recipientName: data.fullName,
+      subject: `${data.code} — Verify Your Zeek Softwares Affiliate Account`,
+      greeting: `Hello ${data.fullName},`,
+      bodyHtml,
+      isPromotional: false,
+    });
+  },
+
+  async sendAffiliateActivatedEmail(data: {
+    fullName: string;
+    email: string;
+    referralCode: string;
+  }) {
+    const appBase = getPublicAppUrl();
+    const referralLink = `${appBase}/?ref=${encodeURIComponent(data.referralCode)}`;
+    const bodyHtml = `
+      <p>Your email address has been verified and your <strong>Zeek Softwares Affiliate Account</strong> is now active!</p>
+      <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;padding:14px;margin:14px 0;">
+        <p style="margin:0 0 6px;"><strong>Referral Code:</strong> ${escapeHtml(data.referralCode)}</p>
+        <p style="margin:0;"><strong>Your Referral Link:</strong> <a href="${escapeHtml(
+          referralLink
+        )}" style="color:#061B45;font-weight:700;">${escapeHtml(referralLink)}</a></p>
+      </div>
+      <p>Sign in anytime to view your live wallet balance, commission breakdown, transaction history, and request withdrawals.</p>
+    `;
+
+    return this.sendBrandedEmail({
+      to: data.email,
+      recipientName: data.fullName,
+      subject: 'Your Affiliate Account Is Verified & Active — Zeek Softwares',
+      greeting: `Welcome aboard, ${data.fullName}!`,
+      bodyHtml,
+      ctaLabel: 'Open Affiliate Portal',
+      ctaUrl: appBase,
+      isPromotional: false,
+    });
+  },
+
+  async sendPasswordResetEmail(data: {
+    fullName: string;
+    email: string;
+    code: string;
+    resetUrl: string;
+    expiresInMinutes?: number;
+  }) {
+    const mins = data.expiresInMinutes || 15;
+    const bodyHtml = `
+      <p>We received a request to reset the password for your Zeek Softwares account.</p>
+      <p>Use the one-time verification code below or click the button to create a new password:</p>
+      <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-radius:12px;padding:18px;margin:16px 0;text-align:center;">
+        <span style="display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#64748B;margin-bottom:8px;">
+          One-Time Password Reset Code
+        </span>
+        <span style="font-family:monospace;font-size:32px;font-weight:900;letter-spacing:0.2em;color:#061B45;">
+          ${escapeHtml(data.code)}
+        </span>
+      </div>
+      <p style="font-size:13px;color:#475569;">This reset code and link expire in <strong>${mins} minutes</strong> and can only be used once. If you did not request a password reset, you can safely ignore this email.</p>
+    `;
+
+    return this.sendBrandedEmail({
+      to: data.email,
+      recipientName: data.fullName,
+      subject: `${data.code} — Reset Your Zeek Softwares Password`,
+      greeting: `Hello ${data.fullName || 'there'},`,
+      bodyHtml,
+      ctaLabel: 'Reset Password Now',
+      ctaUrl: data.resetUrl,
+      isPromotional: false,
+    });
+  },
+
+  async sendPasswordChangedEmail(data: { fullName: string; email: string }) {
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const bodyHtml = `
+      <p>Your Zeek Softwares account password has been changed successfully.</p>
+      <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:10px;padding:14px;margin:12px 0;">
+        <p style="margin:0 0 6px;"><strong>Account:</strong> ${escapeHtml(data.email)}</p>
+        <p style="margin:0;"><strong>Changed At:</strong> ${escapeHtml(now)} UTC</p>
+      </div>
+      <p>If you did not authorize this change, please contact support immediately.</p>
+    `;
+
+    return this.sendBrandedEmail({
+      to: data.email,
+      recipientName: data.fullName,
+      subject: 'Password Changed Confirmation — Zeek Softwares',
+      greeting: `Hello ${data.fullName || 'there'},`,
+      bodyHtml,
+      ctaLabel: 'Sign In to Account',
+      ctaUrl: getPublicAppUrl(),
       isPromotional: false,
     });
   },
@@ -1272,6 +1459,443 @@ export const emailService = {
     return {
       sent: res.sent,
       log: cleanLog,
+      ...(res.error ? { error: res.error } : {}),
+    };
+  },
+
+  async sendCustomerPaymentConfirmationEmail(params: {
+    order: Order;
+    transaction?: PaymentTransaction | null;
+    deliveryUrl: string;
+    hasDownloads?: boolean;
+    digitalFileNames?: string[];
+    fulfillmentInstructions?: string[];
+  }): Promise<{ sent: boolean; skipped?: boolean; reason?: string; error?: string }> {
+    const { order, transaction } = params;
+    if (order.paymentStatus !== 'paid') {
+      return { sent: false, skipped: true, reason: 'Order payment is not verified as paid' };
+    }
+
+    const now = new Date().toISOString();
+    // Atomic idempotency claim so Paystack webhook retries / concurrent callbacks never double-send
+    const claimed = await OrderModel.findOneAndUpdate(
+      {
+        id: order.id,
+        paymentStatus: 'paid',
+        paymentConfirmationEmailStatus: { $nin: ['sending', 'sent'] },
+      },
+      { $set: { paymentConfirmationEmailStatus: 'sending', updatedAt: now } },
+      { new: true }
+    ).lean();
+
+    if (!claimed) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: 'Customer payment confirmation email already sent or in progress',
+      };
+    }
+
+    const settings = await loadBrandingSettings();
+    const storeName = settings.storeName || 'Zeek Softwares';
+    const txRef = transaction?.reference || order.paymentReference || order.id;
+    const paidAmount = transaction?.amount || order.totalAmount;
+    const currency = transaction?.currency || 'NGN';
+    const formattedAmount =
+      currency === 'NGN'
+        ? `₦${Number(paidAmount || 0).toLocaleString('en-NG')}`
+        : `${currency} ${Number(paidAmount || 0).toLocaleString('en-NG')}`;
+    const paymentDateFormatted = formatEmailDateTime(
+      transaction?.paidAt || order.verifiedAt || now
+    );
+    const channelLabel = transaction?.channel
+      ? `${transaction.gateway || order.paymentMethod} (${transaction.channel})`
+      : transaction?.gateway || order.paymentMethod || 'Paystack';
+
+    const itemsRowsHtml = (order.items || [])
+      .map((item) => {
+        const lineTotal = (item.price || 0) * (item.quantity || 1);
+        return `
+          <tr>
+            <td style="padding:8px 0;border-bottom:1px solid #E2E8F0;font-size:13px;color:#0F172A;">
+              <strong>${escapeHtml(item.productName)}</strong>
+              <span style="display:block;font-size:12px;color:#64748B;">Plan: ${escapeHtml(
+                item.duration
+              )} &bull; Qty: ${item.quantity}</span>
+            </td>
+            <td align="right" style="padding:8px 0;border-bottom:1px solid #E2E8F0;font-size:13px;font-weight:700;color:#061B45;white-space:nowrap;">
+              ₦${lineTotal.toLocaleString('en-NG')}
+            </td>
+          </tr>`;
+      })
+      .join('');
+
+    const activationBlocks: string[] = [];
+    if (order.activationCredentials?.trim()) {
+      activationBlocks.push(`
+        <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#1D4ED8;">
+            Activation &amp; Access Credentials
+          </p>
+          <div style="font-size:13px;color:#0F172A;white-space:pre-wrap;font-family:monospace;">${escapeHtml(
+            order.activationCredentials.trim()
+          )}</div>
+        </div>
+      `);
+    }
+
+    if (params.digitalFileNames && params.digitalFileNames.length > 0) {
+      activationBlocks.push(`
+        <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#15803D;">
+            Ready Digital Downloads
+          </p>
+          <ul style="margin:0;padding-left:18px;font-size:13px;color:#0F172A;">
+            ${params.digitalFileNames.map((fn) => `<li>${escapeHtml(fn)}</li>`).join('')}
+          </ul>
+        </div>
+      `);
+    }
+
+    const cleanInstructions = (params.fulfillmentInstructions || [])
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (cleanInstructions.length > 0) {
+      activationBlocks.push(`
+        <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <p style="margin:0 0 6px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#334155;">
+            Product Activation &amp; Fulfillment Instructions
+          </p>
+          <ul style="margin:0;padding-left:18px;font-size:13px;color:#334155;">
+            ${cleanInstructions.map((inst) => `<li style="margin:3px 0;">${escapeHtml(inst)}</li>`).join('')}
+          </ul>
+        </div>
+      `);
+    }
+
+    const bodyHtml = `
+      <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#ECFDF5;border:1px solid #A7F3D0;color:#047857;font-size:12px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;margin:0 0 14px;">
+        Payment Successful &bull; Verified
+      </div>
+      <p style="margin:0 0 12px;">
+        Thank you for shopping with <strong>${escapeHtml(storeName)}</strong>! Your Paystack payment has been verified and your order has been received.
+      </p>
+      <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:16px;margin:14px 0;">
+        <p style="margin:0 0 10px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#475569;">
+          Payment &amp; Order Summary
+        </p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Customer Name:</strong> ${escapeHtml(
+          order.customerName
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Order ID:</strong> ${escapeHtml(
+          order.id
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Transaction Reference:</strong> <span style="font-family:monospace;">${escapeHtml(
+          txRef
+        )}</span></p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Amount Paid:</strong> <strong style="color:#061B45;">${escapeHtml(
+          formattedAmount
+        )}</strong></p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Payment Method:</strong> ${escapeHtml(
+          channelLabel
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Payment Status:</strong> Payment Successful (Verified)</p>
+        <p style="margin:0;font-size:13px;"><strong>Payment Date &amp; Time:</strong> ${escapeHtml(
+          paymentDateFormatted
+        )}</p>
+      </div>
+      <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;padding:16px;margin:14px 0;">
+        <p style="margin:0 0 8px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#475569;">
+          Purchased Product(s)
+        </p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+          ${itemsRowsHtml}
+        </table>
+      </div>
+      ${activationBlocks.join('')}
+      <p style="margin:14px 0 0;font-size:13px;color:#334155;">
+        Use the secure button below anytime to access your order details, digital downloads, or activation portal:
+      </p>
+    `;
+
+    const subject = `Payment Successful — Order Confirmed (${order.id}) | ${storeName}`;
+    const logId = `eml-pay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+    const built = await buildBrandedEmailContent({
+      recipientName: order.customerName,
+      recipientEmail: order.customerEmail,
+      subject,
+      greeting: `Hello ${order.customerName || 'Valued Customer'},`,
+      bodyHtml,
+      ctaLabel: params.hasDownloads ? 'Access Downloads & Order Details' : 'Access Your Order & Activation',
+      ctaUrl: params.deliveryUrl,
+      preheader: `Payment of ${formattedAmount} verified for order ${order.id} (Ref: ${txRef}).`,
+      isPromotional: false,
+      sendLogId: logId,
+      settings,
+    });
+
+    await EmailSendLogModel.create({
+      id: logId,
+      orderId: order.id,
+      sendType: 'transactional',
+      recipientEmail: order.customerEmail.trim().toLowerCase(),
+      recipientName: order.customerName,
+      subject: built.subject,
+      status: 'sending',
+      attempts: 1,
+      maxAttempts: 3,
+      openCount: 0,
+      clickCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const res = await this.sendEmail({
+      to: order.customerEmail,
+      subject: built.subject,
+      text: built.text,
+      html: built.html,
+    });
+
+    const completedAt = new Date().toISOString();
+    await Promise.all([
+      OrderModel.updateOne(
+        { id: order.id },
+        {
+          $set: {
+            paymentConfirmationEmailStatus: res.sent ? 'sent' : 'failed',
+            ...(res.sent ? { paymentConfirmationEmailSentAt: completedAt } : {}),
+            updatedAt: completedAt,
+          },
+        }
+      ),
+      EmailSendLogModel.updateOne(
+        { id: logId },
+        {
+          $set: {
+            status: res.sent ? 'sent' : 'failed',
+            provider: res.provider,
+            messageId: res.messageId,
+            error: res.sent ? undefined : res.error || 'Failed to dispatch payment confirmation email',
+            sentAt: res.sent ? completedAt : undefined,
+            updatedAt: completedAt,
+          },
+        }
+      ),
+      auditService.addLog(
+        res.sent ? 'Customer Payment Confirmation Email Sent' : 'Customer Payment Confirmation Email Failed',
+        `Order ${order.id} (Ref: ${txRef}) -> ${order.customerEmail} | Status: ${
+          res.sent ? 'Sent' : res.error || 'Failed'
+        }`,
+        'Paystack Automation'
+      ),
+    ]);
+
+    return {
+      sent: res.sent,
+      ...(res.error ? { error: res.error } : {}),
+    };
+  },
+
+  async sendAffiliatePurchaseNotificationEmail(params: {
+    affiliate: Affiliate;
+    order: Order;
+    transaction?: PaymentTransaction | null;
+    commission: AffiliateCommission;
+  }): Promise<{ sent: boolean; skipped?: boolean; reason?: string; error?: string }> {
+    const { affiliate, order, transaction, commission } = params;
+
+    if (order.paymentStatus !== 'paid') {
+      return { sent: false, skipped: true, reason: 'Order is not paid' };
+    }
+    if (!affiliate || affiliate.status !== 'active' || !affiliate.email) {
+      return { sent: false, skipped: true, reason: 'Affiliate account is missing or inactive' };
+    }
+    if (!order.affiliateId || String(order.affiliateId) !== String(affiliate._id)) {
+      return { sent: false, skipped: true, reason: 'Order is not attributed to this affiliate' };
+    }
+    if (order.customerEmail.trim().toLowerCase() === affiliate.email.trim().toLowerCase()) {
+      return { sent: false, skipped: true, reason: 'Self-referral notification blocked' };
+    }
+    if (!commission || commission.commissionAmount <= 0 || commission.status === 'reversed') {
+      return { sent: false, skipped: true, reason: 'No active commission recorded for this order' };
+    }
+
+    const now = new Date().toISOString();
+    // Atomic idempotency claim so Paystack webhook retries / concurrent callbacks never double-notify affiliate
+    const claimed = await OrderModel.findOneAndUpdate(
+      {
+        id: order.id,
+        paymentStatus: 'paid',
+        affiliateId: affiliate._id,
+        affiliateNotificationEmailStatus: { $nin: ['sending', 'sent'] },
+      },
+      { $set: { affiliateNotificationEmailStatus: 'sending', updatedAt: now } },
+      { new: true }
+    ).lean();
+
+    if (!claimed) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: 'Affiliate purchase notification already sent or in progress',
+      };
+    }
+
+    const settings = await loadBrandingSettings();
+    const storeName = settings.storeName || 'Zeek Softwares';
+    const appBase = getPublicAppUrl();
+    const txRef = transaction?.reference || order.paymentReference || order.id;
+    const purchaseDateFormatted = formatEmailDateTime(
+      transaction?.paidAt || order.verifiedAt || commission.createdAt || now
+    );
+    const commissionStatusLabel =
+      commission.status === 'eligible'
+        ? 'Approved (Credited to Wallet)'
+        : commission.status === 'pending'
+        ? 'Pending'
+        : 'Reversed';
+
+    // Privacy check: list purchased product names/durations ONLY — zero customer PII
+    const productSummaryText =
+      (order.items || [])
+        .map((it) => `${it.productName} (${it.duration}) × ${it.quantity}`)
+        .join(', ') || commission.productName;
+
+    const formattedPurchaseAmount = `₦${Number(order.totalAmount || 0).toLocaleString('en-NG')}`;
+    const formattedCommission = `₦${Number(commission.commissionAmount || 0).toLocaleString('en-NG')}`;
+
+    const bodyHtml = `
+      <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:#ECFDF5;border:1px solid #A7F3D0;color:#047857;font-size:12px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;margin:0 0 14px;">
+        New Verified Referral Sale
+      </div>
+      <p style="margin:0 0 12px;">
+        Great news! A customer has successfully completed a verified purchase through your <strong>${escapeHtml(
+          storeName
+        )} Affiliate Referral Link</strong>.
+      </p>
+      <div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:12px;padding:16px;margin:14px 0;">
+        <p style="margin:0 0 4px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#047857;">
+          Commission Earned
+        </p>
+        <p style="margin:0;font-size:26px;font-weight:900;color:#065F46;">
+          ${escapeHtml(formattedCommission)}
+          <span style="font-size:13px;font-weight:700;color:#047857;">(${commission.commissionRate}% rate)</span>
+        </p>
+      </div>
+      <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:12px;padding:16px;margin:14px 0;">
+        <p style="margin:0 0 10px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.05em;color:#475569;">
+          Referral Transaction Details
+        </p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Affiliate Name:</strong> ${escapeHtml(
+          affiliate.fullName
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Product Purchased:</strong> ${escapeHtml(
+          productSummaryText
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Order Reference:</strong> ${escapeHtml(
+          order.id
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Transaction Reference:</strong> <span style="font-family:monospace;">${escapeHtml(
+          txRef
+        )}</span></p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Purchase Amount:</strong> ${escapeHtml(
+          formattedPurchaseAmount
+        )}</p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Commission Earned:</strong> <strong style="color:#047857;">${escapeHtml(
+          formattedCommission
+        )}</strong></p>
+        <p style="margin:0 0 6px;font-size:13px;"><strong>Commission Status:</strong> ${escapeHtml(
+          commissionStatusLabel
+        )}</p>
+        <p style="margin:0;font-size:13px;"><strong>Purchase Date &amp; Time:</strong> ${escapeHtml(
+          purchaseDateFormatted
+        )}</p>
+      </div>
+      <p style="margin:12px 0 0;font-size:13px;color:#475569;">
+        This commission has been automatically recorded in your affiliate earnings and transaction history. Open your Affiliate Dashboard anytime to track your live wallet balance and request payouts.
+      </p>
+    `;
+
+    const subject = `New Affiliate Sale: You Earned ${formattedCommission} (${order.id}) | ${storeName}`;
+    const logId = `eml-aff-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+    const built = await buildBrandedEmailContent({
+      recipientName: affiliate.fullName,
+      recipientEmail: affiliate.email,
+      subject,
+      greeting: `Congratulations, ${affiliate.fullName}!`,
+      bodyHtml,
+      ctaLabel: 'Open Affiliate Dashboard',
+      ctaUrl: appBase,
+      preheader: `You earned ${formattedCommission} commission from a verified referral purchase (${order.id}).`,
+      isPromotional: false,
+      sendLogId: logId,
+      settings,
+    });
+
+    await EmailSendLogModel.create({
+      id: logId,
+      orderId: order.id,
+      sendType: 'transactional',
+      recipientEmail: affiliate.email.trim().toLowerCase(),
+      recipientName: affiliate.fullName,
+      subject: built.subject,
+      status: 'sending',
+      attempts: 1,
+      maxAttempts: 3,
+      openCount: 0,
+      clickCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const res = await this.sendEmail({
+      to: affiliate.email,
+      subject: built.subject,
+      text: built.text,
+      html: built.html,
+    });
+
+    const completedAt = new Date().toISOString();
+    await Promise.all([
+      OrderModel.updateOne(
+        { id: order.id },
+        {
+          $set: {
+            affiliateNotificationEmailStatus: res.sent ? 'sent' : 'failed',
+            ...(res.sent ? { affiliateNotificationEmailSentAt: completedAt } : {}),
+            updatedAt: completedAt,
+          },
+        }
+      ),
+      EmailSendLogModel.updateOne(
+        { id: logId },
+        {
+          $set: {
+            status: res.sent ? 'sent' : 'failed',
+            provider: res.provider,
+            messageId: res.messageId,
+            error: res.sent ? undefined : res.error || 'Failed to dispatch affiliate purchase notification',
+            sentAt: res.sent ? completedAt : undefined,
+            updatedAt: completedAt,
+          },
+        }
+      ),
+      auditService.addLog(
+        res.sent
+          ? 'Affiliate Purchase Notification Email Sent'
+          : 'Affiliate Purchase Notification Email Failed',
+        `Order ${order.id} -> Affiliate ${affiliate.fullName} (${affiliate.email}) | Commission: ${formattedCommission} | Status: ${
+          res.sent ? 'Sent' : res.error || 'Failed'
+        }`,
+        'Paystack Automation'
+      ),
+    ]);
+
+    return {
+      sent: res.sent,
       ...(res.error ? { error: res.error } : {}),
     };
   },

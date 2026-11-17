@@ -35,7 +35,7 @@ import {
 import { productService } from './product.service';
 import { auditService } from './audit.service';
 import { uploadService } from './upload.service';
-import { emailService, escapeHtml } from './email.service';
+import { emailService, escapeHtml, getPublicAppUrl } from './email.service';
 import { ApiError } from '../utils/ApiError';
 
 const stripMongoMeta = <T extends object>(doc: T & { _id?: unknown; key?: unknown }): Omit<T, '_id' | 'key'> => {
@@ -84,14 +84,32 @@ export const cmsService = {
           ...DEFAULT_POST_PAYMENT_CONFIG,
           ...(stripped.postPaymentConfig || {}),
         },
-        emailBranding: {
-          ...DEFAULT_EMAIL_BRANDING,
-          ...(stripped.emailBranding || {}),
-        },
+        emailBranding: (() => {
+          const merged = {
+            ...DEFAULT_EMAIL_BRANDING,
+            ...(stripped.emailBranding || {}),
+          };
+          const currentUrl = getPublicAppUrl();
+          if (
+            !merged.websiteUrl ||
+            merged.websiteUrl.includes('MY_APP_URL') ||
+            /zeeksoftwares\.com/i.test(merged.websiteUrl)
+          ) {
+            merged.websiteUrl = currentUrl;
+          }
+          return merged;
+        })(),
       };
     }
-    await SiteSettingsModel.create({ key: 'site_settings', ...defaults });
-    return defaults;
+    const createdDefaults = {
+      ...defaults,
+      emailBranding: {
+        ...DEFAULT_EMAIL_BRANDING,
+        websiteUrl: getPublicAppUrl(),
+      },
+    };
+    await SiteSettingsModel.create({ key: 'site_settings', ...createdDefaults });
+    return createdDefaults;
   },
 
   async updateSettings(updates: Partial<SiteSettings>, adminUser = 'Admin'): Promise<SiteSettings> {

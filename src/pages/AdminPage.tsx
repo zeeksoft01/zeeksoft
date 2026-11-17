@@ -57,6 +57,7 @@ import {
   Affiliate,
   AffiliateWithdrawal,
   ReferralAttribution,
+  PaymentTransaction,
   SystemUser,
   UserRole,
   UserStatus,
@@ -118,6 +119,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   // Dashboard Data State
   const [stats, setStats] = useState<any>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
+  const [showTxLog, setShowTxLog] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [reviews, setReviews] = useState<CustomerReview[]>([]);
   const [inquiries, setInquiries] = useState<ContactMessage[]>([]);
@@ -459,9 +462,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         logsRes,
         bootstrap,
         affiliatesRes,
-        referredRes,
+        referralsRes,
         withdrawalsRes,
         adminsRes,
+        txRes,
       ] = await Promise.all([
         api.getAdminDashboard(token),
         api.getAdminOrders(token),
@@ -473,15 +477,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         api.getAdminReferredCustomers(token).catch(() => [] as ReferralAttribution[]),
         api.getAdminWithdrawals(token),
         api.getAdminUsers(token),
+        api.getAdminTransactions(token).catch(() => [] as PaymentTransaction[]),
       ]);
 
       setStats(dashRes.stats);
       setOrders(ordersRes);
+      setTransactions(txRes);
       setReviews(reviewsRes);
       setInquiries(inquiriesRes);
       setAuditLogs(logsRes);
       setAffiliates(affiliatesRes);
-      setReferredCustomers(referredRes);
+      setReferredCustomers(referralsRes);
       setWithdrawals(withdrawalsRes);
       setAdminUsers(adminsRes);
       setProducts(bootstrap.allProducts || bootstrap.products);
@@ -886,11 +892,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   // Update Affiliate Withdrawal Status
   const handleWithdrawalStatus = async (
     withdrawalId: string,
-    status: AffiliateWithdrawal['status']
+    status: AffiliateWithdrawal['status'],
+    extra?: { rejectionReason?: string; transferReference?: string; adminNotes?: string }
   ) => {
     if (!token) return;
     try {
-      await api.updateAdminWithdrawal(token, withdrawalId, { status });
+      await api.updateAdminWithdrawal(token, withdrawalId, { status, ...extra });
       setSaveSuccessMsg(`Withdrawal ${withdrawalId} updated to ${status}.`);
       loadAdminData();
     } catch (err: unknown) {
@@ -1315,15 +1322,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   </p>
                 </div>
 
-                {/* Filters */}
-                <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                   <div className="relative flex-1 sm:w-64">
                     <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
                       value={orderSearchQuery}
                       onChange={(e) => setOrderSearchQuery(e.target.value)}
-                      placeholder="Search ID, name, email..."
+                      placeholder="Search ID, name, email, ref..."
                       className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-300 bg-white"
                     />
                   </div>
@@ -1338,11 +1344,85 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     <option value="paid">Paid & Confirmed</option>
                     <option value="delivered">Delivered</option>
                   </select>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowTxLog((prev) => !prev)}
+                    className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                      showTxLog
+                        ? 'bg-[#061B45] text-white border-[#061B45]'
+                        : 'bg-white text-[#061B45] border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    Verified Transactions ({transactions.length})
+                  </button>
                 </div>
               </div>
 
+              {showTxLog && (
+                <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#061B45]">
+                        Verified Paystack & Payment Transactions Ledger ({transactions.length})
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Automatically captured via Paystack webhook & callback verification.
+                      </p>
+                    </div>
+                  </div>
+                  <table className="w-full text-xs text-left">
+                    <thead className="bg-slate-50 text-slate-600 uppercase font-bold border-b border-slate-200">
+                      <tr>
+                        <th className="p-3">Reference</th>
+                        <th className="p-3">Order ID</th>
+                        <th className="p-3">Customer</th>
+                        <th className="p-3">Amount Paid</th>
+                        <th className="p-3">Gateway / Channel</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3">Payment Date & Time</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {transactions.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="p-6 text-center text-slate-400">
+                            No verified payment transactions recorded yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        transactions.map((tx) => (
+                          <tr key={tx.reference} className="hover:bg-slate-50">
+                            <td className="p-3 font-mono font-bold text-[#061B45]">
+                              {tx.reference}
+                            </td>
+                            <td className="p-3 font-mono text-slate-700">{tx.orderId}</td>
+                            <td className="p-3 text-slate-700">{tx.customerEmail}</td>
+                            <td className="p-3 font-mono font-black text-emerald-700 tabular-nums">
+                              ₦{tx.amount.toLocaleString('en-NG')}
+                            </td>
+                            <td className="p-3 uppercase text-[11px] text-slate-600">
+                              {tx.gateway}
+                              {tx.channel ? ` • ${tx.channel}` : ''}
+                            </td>
+                            <td className="p-3">
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">
+                                {tx.status}
+                              </span>
+                            </td>
+                            <td className="p-3 font-mono text-[11px] text-slate-500 tabular-nums">
+                              {(tx.paidAt || tx.createdAt || '').replace('T', ' ').substring(0, 19)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               {/* Orders Table */}
-              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
                 <table className="w-full text-xs text-left">
                   <thead className="bg-[#061B45] text-white uppercase font-bold">
                     <tr>
@@ -1350,7 +1430,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                       <th className="p-3.5">Customer</th>
                       <th className="p-3.5">Items & Plan</th>
                       <th className="p-3.5">Amount</th>
-                      <th className="p-3.5">Payment Method</th>
+                      <th className="p-3.5">Payment & Reference</th>
                       <th className="p-3.5">Payment Status</th>
                       <th className="p-3.5">Fulfillment</th>
                       <th className="p-3.5 text-right">Actions</th>
@@ -1364,71 +1444,87 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                         </td>
                       </tr>
                     ) : (
-                      filteredOrders.map((ord, idx) => (
-                        <tr key={`${ord.id}-${idx}`} className="hover:bg-slate-50">
-                          <td className="p-3.5 font-mono font-bold text-slate-900">{ord.id}</td>
-                          <td className="p-3.5">
-                            <span className="font-bold text-slate-900 block">{ord.customerName}</span>
-                            <span className="text-slate-400 text-[10px] block">{ord.customerEmail}</span>
-                            <span className="text-slate-500 font-mono text-[10px]">{ord.customerWhatsApp}</span>
-                          </td>
-                          <td className="p-3.5">
-                            {ord.items.map((i, itemIdx) => (
-                              <div key={`${i.productId || 'item'}-${itemIdx}`} className="font-medium text-slate-800">
-                                {i.productName} ({i.duration})
-                              </div>
-                            ))}
-                          </td>
-                          <td className="p-3.5 font-bold text-[#061B45]">
-                            ₦{ord.totalAmount.toLocaleString('en-NG')}
-                          </td>
-                          <td className="p-3.5">
-                            <span className="font-semibold text-slate-700">{ord.paymentMethod}</span>
-                            {ord.paymentReference && (
-                              <span className="text-[10px] text-slate-400 block font-mono truncate max-w-[120px]">
-                                {ord.paymentReference}
+                      filteredOrders.map((ord, idx) => {
+                        const matchedTx = transactions.find(
+                          (t) =>
+                            t.orderId === ord.id ||
+                            (ord.paymentReference && t.reference === ord.paymentReference)
+                        );
+                        const paidStamp = matchedTx?.paidAt || matchedTx?.createdAt || ord.verifiedAt;
+                        return (
+                          <tr key={`${ord.id}-${idx}`} className="hover:bg-slate-50">
+                            <td className="p-3.5 font-mono font-bold text-slate-900">{ord.id}</td>
+                            <td className="p-3.5">
+                              <span className="font-bold text-slate-900 block">{ord.customerName}</span>
+                              <span className="text-slate-400 text-[10px] block">{ord.customerEmail}</span>
+                              <span className="text-slate-500 font-mono text-[10px]">{ord.customerWhatsApp}</span>
+                            </td>
+                            <td className="p-3.5">
+                              {ord.items.map((i, itemIdx) => (
+                                <div key={`${i.productId || 'item'}-${itemIdx}`} className="font-medium text-slate-800">
+                                  {i.productName} ({i.duration})
+                                </div>
+                              ))}
+                            </td>
+                            <td className="p-3.5 font-bold text-[#061B45] tabular-nums">
+                              ₦{(matchedTx?.amount ?? ord.totalAmount).toLocaleString('en-NG')}
+                            </td>
+                            <td className="p-3.5">
+                              <span className="font-semibold text-slate-700 block">
+                                {ord.paymentMethod}
+                                {matchedTx?.channel ? ` (${matchedTx.channel})` : ''}
                               </span>
-                            )}
-                          </td>
-                          <td className="p-3.5">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                ord.paymentStatus === 'paid'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : ord.paymentStatus === 'awaiting_verification'
-                                  ? 'bg-amber-100 text-amber-800'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {ord.paymentStatus}
-                            </span>
-                          </td>
-                          <td className="p-3.5 font-semibold text-slate-800">
-                            {ord.fulfillmentStatus}
-                          </td>
-                          <td className="p-3.5 text-right space-x-1">
-                            {ord.paymentStatus !== 'paid' && (
-                              <button
-                                onClick={() => handleVerifyOrderPayment(ord.id)}
-                                className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-sm"
-                                title="Verify Payment"
+                              {(matchedTx?.reference || ord.paymentReference) && (
+                                <span className="text-[10px] text-slate-500 block font-mono truncate max-w-[140px]">
+                                  {matchedTx?.reference || ord.paymentReference}
+                                </span>
+                              )}
+                              {paidStamp && (
+                                <span className="text-[10px] text-emerald-700 block font-mono tabular-nums">
+                                  {paidStamp.replace('T', ' ').substring(0, 16)}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3.5">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  ord.paymentStatus === 'paid'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : ord.paymentStatus === 'awaiting_verification'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-slate-100 text-slate-700'
+                                }`}
                               >
-                                Verify Paid
-                              </button>
-                            )}
+                                {matchedTx ? `${ord.paymentStatus} (${matchedTx.status})` : ord.paymentStatus}
+                              </span>
+                            </td>
+                            <td className="p-3.5 font-semibold text-slate-800">
+                              {ord.fulfillmentStatus}
+                            </td>
+                            <td className="p-3.5 text-right space-x-1">
+                              {ord.paymentStatus !== 'paid' && (
+                                <button
+                                  onClick={() => handleVerifyOrderPayment(ord.id)}
+                                  className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold shadow-sm"
+                                  title="Verify Payment"
+                                >
+                                  Verify Paid
+                                </button>
+                              )}
 
-                            <button
-                              onClick={() => {
-                                setSelectedOrder(ord);
-                                setOrderCredentials(ord.activationCredentials || '');
-                              }}
-                              className="px-2.5 py-1 rounded bg-[#061B45] hover:bg-[#0c2a63] text-white text-[10px] font-bold"
-                            >
-                              Details
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                              <button
+                                onClick={() => {
+                                  setSelectedOrder(ord);
+                                  setOrderCredentials(ord.activationCredentials || '');
+                                }}
+                                className="px-2.5 py-1 rounded bg-[#061B45] hover:bg-[#0c2a63] text-white text-[10px] font-bold"
+                              >
+                                Details
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -2930,41 +3026,71 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </button>
             </div>
 
-            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs space-y-2">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Customer:</span>
-                <strong className="text-slate-900">{selectedOrder.customerName}</strong>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Email:</span>
-                <span>{selectedOrder.customerEmail}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">WhatsApp:</span>
-                <a
-                  href={`https://wa.me/${selectedOrder.customerWhatsApp.replace(/\D/g, '')}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-bold text-[#16A34A] underline"
-                >
-                  {selectedOrder.customerWhatsApp}
-                </a>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Amount:</span>
-                <strong className="text-[#FF7900]">₦{selectedOrder.totalAmount.toLocaleString('en-NG')}</strong>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Payment Status:</span>
-                <span className="font-bold">{selectedOrder.paymentStatus}</span>
-              </div>
-              {selectedOrder.paymentReference && (
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Reference:</span>
-                  <span className="font-mono">{selectedOrder.paymentReference}</span>
+            {(() => {
+              const matchedTx = transactions.find(
+                (t) =>
+                  t.orderId === selectedOrder.id ||
+                  (selectedOrder.paymentReference && t.reference === selectedOrder.paymentReference)
+              );
+              const paidTime = matchedTx?.paidAt || matchedTx?.createdAt || selectedOrder.verifiedAt;
+              return (
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Customer:</span>
+                    <strong className="text-slate-900">{selectedOrder.customerName}</strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Email:</span>
+                    <span>{selectedOrder.customerEmail}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">WhatsApp:</span>
+                    <a
+                      href={`https://wa.me/${selectedOrder.customerWhatsApp.replace(/\D/g, '')}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-bold text-[#16A34A] underline"
+                    >
+                      {selectedOrder.customerWhatsApp}
+                    </a>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Amount Paid:</span>
+                    <strong className="text-[#FF7900] tabular-nums">
+                      ₦{(matchedTx?.amount ?? selectedOrder.totalAmount).toLocaleString('en-NG')}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Transaction Status:</span>
+                    <span className="font-bold uppercase">
+                      {matchedTx ? `${matchedTx.status} (${selectedOrder.paymentStatus})` : selectedOrder.paymentStatus}
+                    </span>
+                  </div>
+                  {(matchedTx?.reference || selectedOrder.paymentReference) && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Transaction Reference:</span>
+                      <span className="font-mono font-bold text-[#061B45]">
+                        {matchedTx?.reference || selectedOrder.paymentReference}
+                      </span>
+                    </div>
+                  )}
+                  {matchedTx?.channel && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Payment Channel:</span>
+                      <span className="font-semibold uppercase">{matchedTx.channel}</span>
+                    </div>
+                  )}
+                  {paidTime && (
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Payment Date & Time:</span>
+                      <span className="font-mono tabular-nums">
+                        {paidTime.replace('T', ' ').substring(0, 19)}
+                      </span>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Verification Button if pending */}
             {selectedOrder.paymentStatus !== 'paid' && (

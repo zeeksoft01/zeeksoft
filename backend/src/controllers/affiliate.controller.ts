@@ -9,9 +9,12 @@ export const affiliateController = {
     const result = await affiliateService.registerAffiliate(req.body);
     res.status(201).json({
       success: true,
-      message: 'Affiliate account registered successfully.',
-      affiliate: result.affiliate,
-      token: result.token,
+      requiresVerification: result.requiresVerification,
+      email: result.email,
+      emailSent: result.emailSent,
+      message: result.emailSent
+        ? `Verification code sent to ${result.email}. Enter the code to activate your affiliate account.`
+        : 'Affiliate registration saved. Please verify your email address with the verification code to activate your account.',
     });
   }),
 
@@ -38,7 +41,13 @@ export const affiliateController = {
     if (!req.affiliateAuth) {
       throw new ApiError(401, 'Unauthorized');
     }
-    const dashboard = await affiliateService.getAffiliateDashboard(req.affiliateAuth.affiliateId);
+    const dashboard = await affiliateService.getAffiliateDashboard(req.affiliateAuth.affiliateId, {
+      period: typeof req.query.period === 'string' ? (req.query.period as any) : undefined,
+      from: typeof req.query.from === 'string' ? req.query.from : undefined,
+      to: typeof req.query.to === 'string' ? req.query.to : undefined,
+      payoutFilter:
+        typeof req.query.payoutFilter === 'string' ? (req.query.payoutFilter as any) : undefined,
+    });
     res.json({
       success: true,
       ...dashboard,

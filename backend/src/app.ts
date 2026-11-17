@@ -11,6 +11,7 @@ import {
   errorHandler,
 } from './middlewares';
 import { setupSwaggerDocs } from '../documentations/swagger.config';
+import { setRuntimeAppUrl } from './services/email.service';
 
 export interface ConfigureBackendOptions {
   standalone?: boolean;
@@ -127,6 +128,17 @@ export const configureBackendApp = (
 
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(sanitizeRequestInput);
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    const rawHost = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
+    if (/^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(rawHost)) {
+      const proto =
+        req.get('x-forwarded-proto')?.split(',')[0].trim() === 'https' || req.protocol === 'https'
+          ? 'https'
+          : 'http';
+      setRuntimeAppUrl(`${proto}://${rawHost}`);
+    }
+    next();
+  });
   app.use(requestLogger);
 
   // Global baseline API rate limit (excludes Paystack server-to-server webhook)

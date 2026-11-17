@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { env } from '../config/env';
-import { orderService, paystackService } from '../services';
+import { paystackService } from '../services';
 
 const resolveSafeAppBaseUrl = (req: Request): string => {
   if (env.appUrl && !env.appUrl.includes('MY_APP_URL')) {
@@ -16,10 +16,12 @@ const resolveSafeAppBaseUrl = (req: Request): string => {
     }
   }
 
-  const rawHost = (req.get('host') || '').trim();
+  const rawHost = (req.get('x-forwarded-host') || req.get('host') || '').split(',')[0].trim();
   const safeHost = /^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(rawHost) ? rawHost : 'localhost:3000';
   const protocol =
-    req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+    req.protocol === 'https' || req.get('x-forwarded-proto')?.split(',')[0].trim() === 'https'
+      ? 'https'
+      : 'http';
   return `${protocol}://${safeHost}`;
 };
 
@@ -37,6 +39,15 @@ export const paymentController = {
     res.json(result);
   }),
 
+  getPaymentHistory: asyncHandler(async (req: Request, res: Response) => {
+    const query = String(req.body?.query || req.query?.query || '');
+    const transactions = await paystackService.lookupPaymentHistory(query);
+    res.json({
+      success: true,
+      transactions,
+    });
+  }),
+
   handlePaystackWebhook: asyncHandler(async (req: Request, res: Response) => {
     if (!paystackService.isKeyConfigured()) {
       res.status(503).send('Paystack gateway not configured');
@@ -48,7 +59,6 @@ export const paymentController = {
       ? req.body.toString('utf-8')
       : JSON.stringify(req.body || {});
 
-    // Verify signature using timing-safe comparison helper
     const expectedHash = crypto
       .createHmac('sha512', env.paystackSecretKey)
       .update(rawBody, 'utf8')
@@ -69,8 +79,11 @@ export const paymentController = {
         reference?: string;
         amount?: number;
         currency?: string;
+        channel?: string;
+        gateway_response?: string;
         paid_at?: string;
         status?: string;
+        metadata?: Record<string, unknown>;
       };
     };
 
@@ -82,33 +95,7 @@ export const paymentController = {
     }
 
     if (event?.event === 'charge.success' && event?.data?.reference) {
-      const reference = String(event.data.reference);
-      const order = await orderService.getOrderById(reference);
-
-      if (order && order.paymentStatus !== 'paid') {
-        const expectedKobo = Math.round(order.totalAmount * 100);
-        const currencyOk =
-          !event.data.currency || String(event.data.currency).toUpperCase() === 'NGN';
-        const amountOk =
-          typeof event.data.amount === 'number' && event.data.amount >= expectedKobo;
-
-        if (!currencyOk || !amountOk) {
-          res.status(400).send('Webhook amount or currency mismatch');
-          return;
-        }
-
-        await orderService.updateOrder(
-          order.id,
-          {
-            paymentStatus: 'paid',
-            fulfillmentStatus: 'Payment Confirmed',
-            paymentReference: reference,
-            verifiedAt: event.data.paid_at || new Date().toISOString(),
-            verifiedBy: 'Paystack Webhook',
-          },
-          'Paystack Webhook'
-        );
-      }
+      await paystackService.processWebhookChargeSuccess(event.data);
     }
 
     res.status(200).send('Webhook processed');

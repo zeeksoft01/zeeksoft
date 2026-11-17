@@ -248,7 +248,7 @@ export const EmailMarketingAdmin: React.FC<EmailMarketingAdminProps> = ({
       '<p>Hi {{firstName}},</p><p>We have exciting productivity updates and subsidized software offers waiting for you at Zeek Softwares.</p>',
     bannerImageUrl: '',
     ctaLabel: 'Browse Software Plans',
-    ctaUrl: typeof window !== 'undefined' ? `${window.location.origin}/products` : 'https://zeeksoftwares.com/products',
+    ctaUrl: typeof window !== 'undefined' ? `${window.location.origin}/products` : '/products',
     targetType: 'all',
     targetCategories: [],
     targetProductIds: [],
@@ -284,7 +284,13 @@ export const EmailMarketingAdmin: React.FC<EmailMarketingAdminProps> = ({
 
   // Branding state
   const [brandingForm, setBrandingForm] = useState<EmailBrandingConfig>({
-    websiteUrl: settings.emailBranding?.websiteUrl || 'https://zeeksoftwares.com',
+    websiteUrl:
+      settings.emailBranding?.websiteUrl &&
+      !/zeeksoftwares\.com/i.test(settings.emailBranding.websiteUrl)
+        ? settings.emailBranding.websiteUrl
+        : typeof window !== 'undefined'
+        ? window.location.origin
+        : '',
     footerNote: settings.emailBranding?.footerNote || 'Thank you for trusting Zeek Softwares for verified digital productivity tools.',
     facebookUrl: settings.emailBranding?.facebookUrl || '',
     instagramUrl: settings.emailBranding?.instagramUrl || '',

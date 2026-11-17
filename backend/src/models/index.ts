@@ -23,4 +23,7 @@ export { DailyAutomationConfigModel } from './DailyAutomationConfig.model';
 export { DigitalAssetModel } from './DigitalAsset.model';
 export { ProductDeliveryRecordModel } from './ProductDeliveryRecord.model';
 export { EmailImportHistoryModel } from './EmailImportHistory.model';
+export { PaymentTransactionModel } from './PaymentTransaction.model';
+export { AuthTokenModel } from './AuthToken.model';
+
 

@@ -152,6 +152,10 @@ export interface Order {
   commissionAwarded?: boolean;
   commissionSkippedReason?: string;
   thankYouEmailSentAt?: string;
+  paymentConfirmationEmailStatus?: 'sending' | 'sent' | 'failed';
+  paymentConfirmationEmailSentAt?: string;
+  affiliateNotificationEmailStatus?: 'sending' | 'sent' | 'failed';
+  affiliateNotificationEmailSentAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -631,5 +635,136 @@ export interface EmailImportHistoryItem {
   importedBy: string;
   createdAt: string;
 }
+
+export interface PaymentTransaction {
+  id: string;
+  reference: string;
+  orderId: string;
+  customerName: string;
+  customerEmail: string;
+  amount: number;
+  currency: string;
+  gateway: string;
+  channel?: string;
+  status: 'success' | 'pending' | 'failed' | 'refunded';
+  paidAt: string;
+  verifiedVia: 'webhook' | 'callback' | 'simulation' | 'admin';
+  gatewayResponse?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DatePeriodFilter = 'all' | 'today' | 'yesterday' | 'weekly' | 'monthly' | 'custom';
+export type PayoutFilter = 'all' | 'previous' | 'upcoming' | 'completed' | 'declined';
+
+export interface AffiliateActivityItem {
+  id: string;
+  type:
+    | 'click'
+    | 'referral_attributed'
+    | 'commission_earned'
+    | 'withdrawal_requested'
+    | 'withdrawal_approved'
+    | 'withdrawal_paid'
+    | 'withdrawal_declined'
+    | 'account_verified'
+    | 'balance_adjustment';
+  title: string;
+  description: string;
+  amount?: number;
+  status?: string;
+  referenceId?: string;
+  timestamp: string;
+}
+
+export interface AffiliateDashboardAnalytics {
+  affiliate: Affiliate;
+  filter: {
+    period: DatePeriodFilter;
+    from?: string;
+    to?: string;
+    payoutFilter: PayoutFilter;
+    rangeStart?: string;
+    rangeEnd?: string;
+  };
+  metrics: {
+    walletBalance: number;
+    reservedBalance: number;
+    allTimeEarnings: number;
+    allTimeWithdrawn: number;
+    periodCommissionTotal: number;
+    periodEarningsTotal: number;
+    periodWithdrawnPaid: number;
+    periodPendingPayouts: number;
+    periodClicksCount: number;
+    periodSalesCount: number;
+    periodReferralsCount: number;
+  };
+  commissions: AffiliateCommission[];
+  withdrawals: AffiliateWithdrawal[];
+  payouts: {
+    completed: AffiliateWithdrawal[];
+    upcoming: AffiliateWithdrawal[];
+    declined: AffiliateWithdrawal[];
+  };
+  ledger: AffiliateLedgerEntry[];
+  referredCustomers: ReferralAttribution[];
+  activityHistory: AffiliateActivityItem[];
+}
+
+export interface AdminAffiliatePerformanceRow {
+  affiliateId: string;
+  userId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  referralCode: string;
+  status: UserStatus;
+  isVerified: boolean;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+  availableBalance: number;
+  reservedWithdrawalBalance: number;
+  totalEarned: number;
+  totalWithdrawn: number;
+  periodEarnings: number;
+  periodCommissionsCount: number;
+  periodPaid: number;
+  periodPendingPayout: number;
+  periodClicksCount: number;
+  periodReferralsCount: number;
+  totalClicks: number;
+  totalReferredSalesCount: number;
+  createdAt: string;
+}
+
+export interface AdminAffiliateAnalytics {
+  filter: {
+    period: DatePeriodFilter;
+    from?: string;
+    to?: string;
+    payoutFilter: PayoutFilter;
+    rangeStart?: string;
+    rangeEnd?: string;
+  };
+  summary: {
+    totalAffiliateEarnings: number;
+    totalAmountPaidToAffiliates: number;
+    totalYetToBePaid: number;
+    totalAvailableBalances: number;
+    totalPendingWithdrawalAmount: number;
+    totalCommissionsCount: number;
+    totalAffiliatesCount: number;
+    activeAffiliatesCount: number;
+    pendingReviewCount: number;
+    completedPayoutsCount: number;
+  };
+  affiliatePerformance: AdminAffiliatePerformanceRow[];
+  withdrawals: AffiliateWithdrawal[];
+  commissions: AffiliateCommission[];
+}
+
 
 

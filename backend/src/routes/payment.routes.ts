@@ -1,7 +1,11 @@
 import { Router } from 'express';
 import { paymentController } from '../controllers';
 import { createRateLimiter, validate } from '../middlewares';
-import { initializePaystackSchema, verifyPaystackSchema } from '../validations';
+import {
+  initializePaystackSchema,
+  lookupPaymentHistorySchema,
+  verifyPaystackSchema,
+} from '../validations';
 
 const router = Router();
 const paystackLimiter = createRateLimiter(60_000, 30, 'paystack');
@@ -20,5 +24,12 @@ router.get(
   paymentController.verifyPaystack
 );
 router.post('/paystack/webhook', webhookLimiter, paymentController.handlePaystackWebhook);
+router.post(
+  '/payments/history',
+  paystackLimiter,
+  validate(lookupPaymentHistorySchema),
+  paymentController.getPaymentHistory
+);
 
 export default router;
+

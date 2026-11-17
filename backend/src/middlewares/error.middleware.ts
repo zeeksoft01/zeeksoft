@@ -74,9 +74,19 @@ export const errorHandler = (
     console.error('[API Error]', err);
   }
 
+  const detailObj =
+    details && typeof details === 'object' ? (details as Record<string, unknown>) : null;
+  const requiresVerification = Boolean(detailObj?.requiresVerification);
+
   res.status(statusCode).json({
     success: false,
     error: message,
+    ...(requiresVerification
+      ? {
+          requiresVerification: true,
+          ...(typeof detailObj?.email === 'string' ? { email: detailObj.email } : {}),
+        }
+      : {}),
     ...(details && !env.isProduction ? { details } : {}),
   });
 };

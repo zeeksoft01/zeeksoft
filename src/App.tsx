@@ -8,7 +8,7 @@ import { CheckoutModal } from './components/CheckoutModal';
 import { OrderLookupModal } from './components/OrderLookupModal';
 import { CartModal, CartItem } from './components/CartModal';
 import { PaystackTestModal } from './components/PaystackTestModal';
-import { AuthPortalModal } from './components/AuthPortalModal';
+import { AuthPortalModal, AuthPortalViewMode } from './components/AuthPortalModal';
 import { HomePage } from './pages/HomePage';
 import { ProductsPage } from './pages/ProductsPage';
 import { AboutPage } from './pages/AboutPage';
@@ -19,7 +19,7 @@ import { ProductDetailPage } from './pages/ProductDetailPage';
 import { ProductDeliveryPage } from './pages/ProductDeliveryPage';
 import { EmailPreferencesPage } from './pages/EmailPreferencesPage';
 import { AdminPage } from './pages/AdminPage';
-import { Product, Order, SystemUser, Affiliate } from './types';
+import { Product, Order, PaymentTransaction, SystemUser, Affiliate } from './types';
 import { api, BootstrapResponse } from './api/client';
 import { findProductByIdentifier, getProductPath } from './utils/productUrl';
 import { Loader2, CheckCircle, AlertCircle, X } from 'lucide-react';
@@ -61,8 +61,11 @@ export default function App() {
   const [isLookupOpen, setIsLookupOpen] = useState(false);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
-  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [authModalMode, setAuthModalMode] = useState<AuthPortalViewMode>('login');
   const [authRegisterRole, setAuthRegisterRole] = useState<'affiliate' | 'user'>('affiliate');
+  const [resetDeepLink, setResetDeepLink] = useState<{ email: string; token: string } | null>(
+    null
+  );
 
   // Unified Auth State (single token & user for Affiliate and Admin)
   const [authToken, setAuthToken] = useState<string | null>(() => {
@@ -150,6 +153,7 @@ export default function App() {
     status: 'verifying' | 'success' | 'error';
     message: string;
     order?: Order;
+    transaction?: PaymentTransaction;
   } | null>(null);
 
   // Load Bootstrap Store Data
@@ -237,6 +241,20 @@ export default function App() {
       api.trackReferralClick(cleanRef, path).catch(() => {});
     }
 
+    const resetTokenParam = urlParams.get('resetToken');
+    const resetEmailParam = urlParams.get('email') || '';
+    if (resetTokenParam && resetTokenParam.trim().length >= 4) {
+      setResetDeepLink({
+        email: resetEmailParam.trim(),
+        token: resetTokenParam.trim(),
+      });
+      setAuthModalMode('reset_password');
+      setIsAuthOpen(true);
+      try {
+        window.history.replaceState({}, '', '/');
+      } catch {}
+    }
+
     const txRef = urlParams.get('reference') || urlParams.get('trxref') || '';
     if (path === '/paystack-test-checkout' && txRef) {
       const orderId = urlParams.get('orderId') || '';
@@ -255,6 +273,7 @@ export default function App() {
               status: 'success',
               message: res.message || 'Payment verified and confirmed!',
               order: res.order,
+              transaction: res.transaction,
             });
             try {
               window.history.replaceState({}, '', '/');
@@ -709,17 +728,50 @@ export default function App() {
                 <h3 className="text-lg font-extrabold text-[#061B45]">Payment Verified!</h3>
                 <p className="text-xs text-slate-600">{paystackVerifyState.message}</p>
                 {paystackVerifyState.order && (
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-left text-xs space-y-1">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-left text-xs space-y-1.5">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Order ID:</span>
                       <strong className="font-mono text-[#061B45]">{paystackVerifyState.order.id}</strong>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Amount Paid:</span>
-                      <strong className="text-[#FF7900]">
-                        ₦{paystackVerifyState.order.totalAmount.toLocaleString('en-NG')}
+                      <strong className="text-[#FF7900] font-mono tabular-nums">
+                        ₦
+                        {(
+                          paystackVerifyState.transaction?.amount ??
+                          paystackVerifyState.order.totalAmount
+                        ).toLocaleString('en-NG')}
                       </strong>
                     </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Payment Date & Time:</span>
+                      <span className="font-mono text-slate-700 tabular-nums">
+                        {(
+                          paystackVerifyState.transaction?.paidAt ||
+                          paystackVerifyState.transaction?.createdAt ||
+                          paystackVerifyState.order.verifiedAt ||
+                          new Date().toISOString()
+                        )
+                          .replace('T', ' ')
+                          .slice(0, 19)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Transaction Status:</span>
+                      <strong className="text-emerald-700 uppercase">
+                        {paystackVerifyState.transaction?.status || paystackVerifyState.order.paymentStatus}
+                      </strong>
+                    </div>
+                    {(paystackVerifyState.transaction?.reference ||
+                      paystackVerifyState.order.paymentReference) && (
+                      <div className="flex justify-between gap-2">
+                        <span className="text-slate-500 shrink-0">Transaction Reference:</span>
+                        <strong className="font-mono text-[#061B45] truncate">
+                          {paystackVerifyState.transaction?.reference ||
+                            paystackVerifyState.order.paymentReference}
+                        </strong>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="space-y-2">
@@ -774,6 +826,8 @@ export default function App() {
           isOpen={isAuthOpen}
           initialMode={authModalMode}
           initialRegisterRole={authRegisterRole}
+          initialResetEmail={resetDeepLink?.email || ''}
+          initialResetToken={resetDeepLink?.token || ''}
           authToken={authToken}
           authUser={authUser}
           settings={settings}
@@ -781,7 +835,10 @@ export default function App() {
           onLogout={handleLogout}
           onOpenAdminDashboard={() => setIsAdminOpen(true)}
           onOpenAffiliateGuide={() => handleNavigate('affiliate-guide')}
-          onClose={() => setIsAuthOpen(false)}
+          onClose={() => {
+            setIsAuthOpen(false);
+            setResetDeepLink(null);
+          }}
         />
       )}
 

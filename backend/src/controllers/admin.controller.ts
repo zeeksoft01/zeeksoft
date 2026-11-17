@@ -7,6 +7,7 @@ import {
   auditService,
   cmsService,
   orderService,
+  paystackService,
   productService,
   uploadService,
   userService,
@@ -64,6 +65,11 @@ export const adminController = {
     const status = req.query.status as string | undefined;
     const orders = await orderService.getOrders(status);
     res.json({ success: true, orders });
+  }),
+
+  getTransactions: asyncHandler(async (_req: Request, res: Response) => {
+    const transactions = await paystackService.getAllTransactions();
+    res.json({ success: true, transactions });
   }),
 
   updateOrder: asyncHandler(async (req: Request, res: Response) => {
@@ -230,6 +236,28 @@ export const adminController = {
     res.json({ success: true, affiliates });
   }),
 
+  getAffiliateAnalytics: asyncHandler(async (req: Request, res: Response) => {
+    const analytics = await affiliateService.getAdminAffiliateAnalytics({
+      period: typeof req.query.period === 'string' ? (req.query.period as any) : undefined,
+      from: typeof req.query.from === 'string' ? req.query.from : undefined,
+      to: typeof req.query.to === 'string' ? req.query.to : undefined,
+      payoutFilter:
+        typeof req.query.payoutFilter === 'string' ? (req.query.payoutFilter as any) : undefined,
+    });
+    res.json({ success: true, ...analytics });
+  }),
+
+  getAffiliateDashboardById: asyncHandler(async (req: Request, res: Response) => {
+    const dashboard = await affiliateService.getAffiliateDashboard(req.params.affiliateId, {
+      period: typeof req.query.period === 'string' ? (req.query.period as any) : undefined,
+      from: typeof req.query.from === 'string' ? req.query.from : undefined,
+      to: typeof req.query.to === 'string' ? req.query.to : undefined,
+      payoutFilter:
+        typeof req.query.payoutFilter === 'string' ? (req.query.payoutFilter as any) : undefined,
+    });
+    res.json({ success: true, ...dashboard });
+  }),
+
   getReferredCustomers: asyncHandler(async (_req: Request, res: Response) => {
     const referredCustomers = await affiliateService.getReferredCustomers();
     res.json({ success: true, referredCustomers });
@@ -240,14 +268,16 @@ export const adminController = {
     res.json({ success: true, withdrawals });
   }),
 
-  updateWithdrawalStatus: asyncHandler(async (req: Request, res: Response) => {
+  updateWithdrawalStatus: asyncHandler(async (req: AuthenticatedAdminRequest, res: Response) => {
     const { withdrawalId } = req.params;
     const { status, transferReference, rejectionReason, adminNotes, adminUser } = req.body;
+    const actingAdmin =
+      adminUser || req.adminAuth?.name || req.adminAuth?.email || 'Admin';
     const withdrawal = await affiliateService.updateWithdrawalStatus(withdrawalId, status, {
       transferReference,
       rejectionReason,
       adminNotes,
-      adminUser,
+      adminUser: actingAdmin,
     });
     res.json({ success: true, withdrawal });
   }),

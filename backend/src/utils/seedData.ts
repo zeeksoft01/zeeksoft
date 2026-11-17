@@ -546,7 +546,12 @@ export const DEFAULT_POST_PAYMENT_CONFIG: PostPaymentConfig = {
 };
 
 export const DEFAULT_EMAIL_BRANDING: EmailBrandingConfig = {
-  websiteUrl: env.appUrl && !env.appUrl.includes('MY_APP_URL') ? env.appUrl : 'https://zeeksoftwares.com',
+  websiteUrl:
+    env.appUrl &&
+    !env.appUrl.includes('MY_APP_URL') &&
+    !/zeeksoftwares\.com/i.test(env.appUrl)
+      ? env.appUrl.replace(/\/$/, '')
+      : '',
   footerNote:
     'You are receiving this email because you interacted with Zeek Softwares — verified digital tools, AI plans, and creative subscriptions.',
   facebookUrl: '',

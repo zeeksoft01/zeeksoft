@@ -308,11 +308,22 @@ export const requireAffiliate = async (
     if (
       !userDoc ||
       userDoc.role !== 'affiliate' ||
+      userDoc.isVerified !== true ||
       userDoc.status !== 'active' ||
       userDoc.isActive === false ||
       !affDoc
     ) {
-      next(new ApiError(403, 'Forbidden: Affiliate account is suspended, disabled, or not an active affiliate'));
+      next(
+        new ApiError(
+          403,
+          userDoc && userDoc.role === 'affiliate' && userDoc.isVerified !== true
+            ? 'Forbidden: Your affiliate email address is not verified yet. Please complete email verification.'
+            : 'Forbidden: Affiliate account is suspended, disabled, or not an active affiliate',
+          userDoc && userDoc.role === 'affiliate' && userDoc.isVerified !== true
+            ? { requiresVerification: true, email: userDoc.email }
+            : undefined
+        )
+      );
       return;
     }
 

@@ -197,22 +197,52 @@ export const ProductDeliveryPage: React.FC<ProductDeliveryPageProps> = ({
 
             {!loading && bundle && bundle.paid && (
               <div className="space-y-6">
-                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 space-y-1.5">
-                  <h2 className="text-lg font-black text-[#061B45]">{bundle.headline}</h2>
-                  <p className="text-xs sm:text-sm text-emerald-900">{bundle.instructions}</p>
-                  <div className="pt-2 flex flex-wrap gap-4 text-xs text-slate-600">
-                    <span>
-                      Customer: <strong className="text-[#061B45]">{bundle.order.customerName}</strong>
-                    </span>
-                    <span>
-                      Paid:{' '}
-                      <strong className="text-[#FF7900]">
-                        ₦{bundle.order.totalAmount.toLocaleString('en-NG')}
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 space-y-3">
+                  <div>
+                    <h2 className="text-lg font-black text-[#061B45]">{bundle.headline}</h2>
+                    <p className="text-xs sm:text-sm text-emerald-900">{bundle.instructions}</p>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2 border-t border-emerald-200/70 text-xs">
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200/60">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                        Amount Paid
+                      </span>
+                      <strong className="text-[#FF7900] font-mono tabular-nums">
+                        ₦{(bundle.transaction?.amount ?? bundle.order.totalAmount).toLocaleString('en-NG')}
                       </strong>
-                    </span>
-                    <span>
-                      Method: <strong className="text-[#061B45]">{bundle.order.paymentMethod}</strong>
-                    </span>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200/60">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                        Payment Date & Time
+                      </span>
+                      <strong className="text-[#061B45] font-mono text-[11px] tabular-nums">
+                        {(bundle.transaction?.paidAt ||
+                          bundle.transaction?.createdAt ||
+                          bundle.order.verifiedAt ||
+                          'Verified'
+                        )
+                          .replace('T', ' ')
+                          .slice(0, 16)}
+                      </strong>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200/60">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                        Transaction Status
+                      </span>
+                      <strong className="text-emerald-700 uppercase">
+                        {bundle.transaction?.status || bundle.order.paymentStatus}
+                      </strong>
+                    </div>
+                    <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200/60">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                        Transaction Reference
+                      </span>
+                      <strong className="text-[#061B45] font-mono text-[11px] truncate block">
+                        {bundle.transaction?.reference ||
+                          bundle.order.paymentReference ||
+                          bundle.order.id}
+                      </strong>
+                    </div>
                   </div>
                 </div>
 

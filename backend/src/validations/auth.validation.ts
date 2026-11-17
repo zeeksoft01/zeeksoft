@@ -71,3 +71,42 @@ export const becomeAffiliateSchema = z.object({
     accountName: z.string().trim().min(2, 'Account holder name is required'),
   }),
 });
+
+export const verifyEmailSchema = z.object({
+  body: z.object({
+    email: z.string().trim().email('Valid email address is required'),
+    code: z.string().trim().min(4, 'Verification code is required').max(12),
+  }),
+});
+
+export const resendVerificationSchema = z.object({
+  body: z.object({
+    email: z.string().trim().email('Valid email address is required'),
+  }),
+});
+
+export const forgotPasswordSchema = z.object({
+  body: z.object({
+    email: z.string().trim().email('Valid email address is required'),
+  }),
+});
+
+export const resetPasswordSchema = z.object({
+  body: z
+    .object({
+      email: z.string().trim().email('Valid email address is required'),
+      code: z.string().trim().optional(),
+      token: z.string().trim().optional(),
+      newPassword: z.string().min(6, 'New password must be at least 6 characters'),
+      confirmPassword: z.string().min(6, 'Confirm password must match new password'),
+    })
+    .refine((data) => Boolean((data.code && data.code.trim()) || (data.token && data.token.trim())), {
+      message: 'Verification code or reset link token is required',
+      path: ['code'],
+    })
+    .refine((data) => data.newPassword === data.confirmPassword, {
+      message: 'New password and confirmation password do not match',
+      path: ['confirmPassword'],
+    }),
+});
+

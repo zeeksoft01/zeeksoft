@@ -43,20 +43,30 @@ export const updateWithdrawalStatusSchema = z.object({
   params: z.object({
     withdrawalId: z.string().trim().min(1, 'Withdrawal ID is required'),
   }),
-  body: z.object({
-    status: z.enum([
-      'Pending Review',
-      'Approved',
-      'Processing Payment',
-      'Payment Sent',
-      'Withdrawal Successful',
-      'Declined',
-    ]),
-    transferReference: z.string().trim().optional(),
-    rejectionReason: z.string().trim().optional(),
-    adminNotes: z.string().trim().optional(),
-    adminUser: z.string().trim().optional(),
-  }),
+  body: z
+    .object({
+      status: z.enum([
+        'Pending Review',
+        'Approved',
+        'Processing Payment',
+        'Payment Sent',
+        'Withdrawal Successful',
+        'Declined',
+      ]),
+      transferReference: z.string().trim().optional(),
+      rejectionReason: z.string().trim().optional(),
+      adminNotes: z.string().trim().optional(),
+      adminUser: z.string().trim().optional(),
+    })
+    .superRefine((data, ctx) => {
+      if (data.status === 'Declined' && (!data.rejectionReason || data.rejectionReason.trim().length < 3)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['rejectionReason'],
+          message: 'Please provide a decline reason (at least 3 characters).',
+        });
+      }
+    }),
 });
 
 export const adjustAffiliateBalanceSchema = z.object({

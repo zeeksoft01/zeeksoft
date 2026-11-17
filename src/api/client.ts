@@ -32,7 +32,29 @@ import {
   DestinationType,
   PostPaymentConfig,
   ProductDeliveryConfig,
+  PaymentTransaction,
+  DatePeriodFilter,
+  PayoutFilter,
+  AffiliateDashboardAnalytics,
+  AdminAffiliateAnalytics,
 } from '../types';
+
+export class ApiRequestError extends Error {
+  status?: number;
+  requiresVerification?: boolean;
+  email?: string;
+
+  constructor(
+    message: string,
+    opts?: { status?: number; requiresVerification?: boolean; email?: string }
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = opts?.status;
+    this.requiresVerification = opts?.requiresVerification;
+    this.email = opts?.email;
+  }
+}
 
 export interface EmailProviderDiagnostics {
   configured: boolean;
@@ -218,6 +240,33 @@ export const api = {
     return json.orders;
   },
 
+  async lookupOrdersAndPayments(
+    query: string
+  ): Promise<{ orders: Order[]; transactions: PaymentTransaction[] }> {
+    const res = await apiFetch(apiUrl('/api/orders/lookup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Lookup failed');
+    return {
+      orders: json.orders || [],
+      transactions: json.transactions || [],
+    };
+  },
+
+  async lookupPaymentHistory(query: string): Promise<PaymentTransaction[]> {
+    const res = await apiFetch(apiUrl('/api/payments/history'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Payment history lookup failed');
+    return json.transactions || [];
+  },
+
   async submitManualPayment(
     orderId: string,
     data: {
@@ -258,8 +307,10 @@ export const api = {
   async verifyPaystack(reference: string): Promise<{
     status: boolean;
     order?: Order;
+    transaction?: PaymentTransaction;
     alreadyProcessed?: boolean;
     channel?: string;
+    verifiedAt?: string;
     message?: string;
   }> {
     const res = await apiFetch(apiUrl(`/api/paystack/verify/${encodeURIComponent(reference)}`));
@@ -316,9 +367,12 @@ export const api = {
     marketingConsent?: boolean;
   }): Promise<{
     success: boolean;
-    token: string;
-    user: SystemUser;
-    affiliate: Affiliate | null;
+    requiresVerification?: boolean;
+    email?: string;
+    emailSent?: boolean;
+    token?: string;
+    user?: SystemUser;
+    affiliate?: Affiliate | null;
     message?: string;
   }> {
     const res = await apiFetch(apiUrl('/api/auth/register'), {
@@ -327,7 +381,74 @@ export const api = {
       body: JSON.stringify(data),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Registration failed');
+    if (!res.ok) {
+      throw new ApiRequestError(json.error || 'Registration failed', {
+        status: res.status,
+        requiresVerification: json.requiresVerification,
+        email: json.email,
+      });
+    }
+    return json;
+  },
+
+  async authVerifyEmail(
+    email: string,
+    code: string
+  ): Promise<{
+    success: boolean;
+    token: string;
+    user: SystemUser;
+    affiliate: Affiliate | null;
+    message?: string;
+  }> {
+    const res = await apiFetch(apiUrl('/api/auth/verify-email'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new ApiRequestError(json.error || 'Email verification failed', { status: res.status });
+    return json;
+  },
+
+  async authResendVerification(
+    email: string
+  ): Promise<{ success: boolean; emailSent: boolean; message: string }> {
+    const res = await apiFetch(apiUrl('/api/auth/resend-verification'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new ApiRequestError(json.error || 'Could not resend verification code', { status: res.status });
+    return json;
+  },
+
+  async authForgotPassword(email: string): Promise<{ success: boolean; message: string }> {
+    const res = await apiFetch(apiUrl('/api/auth/forgot-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new ApiRequestError(json.error || 'Could not start password reset', { status: res.status });
+    return json;
+  },
+
+  async authResetPassword(data: {
+    email: string;
+    code?: string;
+    token?: string;
+    newPassword: string;
+    confirmPassword: string;
+  }): Promise<{ success: boolean; message: string }> {
+    const res = await apiFetch(apiUrl('/api/auth/reset-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new ApiRequestError(json.error || 'Password reset failed', { status: res.status });
     return json;
   },
 
@@ -349,7 +470,13 @@ export const api = {
       }),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Login failed');
+    if (!res.ok) {
+      throw new ApiRequestError(json.error || 'Login failed', {
+        status: res.status,
+        requiresVerification: json.requiresVerification,
+        email: json.email,
+      });
+    }
     return json;
   },
 
@@ -389,7 +516,13 @@ export const api = {
       body: JSON.stringify(data),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Failed to activate affiliate profile');
+    if (!res.ok) {
+      throw new ApiRequestError(json.error || 'Failed to activate affiliate profile', {
+        status: res.status,
+        requiresVerification: json.requiresVerification,
+        email: json.email,
+      });
+    }
     return json;
   },
 
@@ -403,14 +536,23 @@ export const api = {
     accountNumber: string;
     accountName: string;
     marketingConsent?: boolean;
-  }): Promise<{ success: boolean; affiliate: Affiliate; user?: SystemUser; token: string }> {
+  }): Promise<{
+    success: boolean;
+    requiresVerification?: boolean;
+    email?: string;
+    emailSent?: boolean;
+    message?: string;
+    affiliate?: Affiliate;
+    user?: SystemUser;
+    token?: string;
+  }> {
     const res = await apiFetch(apiUrl('/api/affiliates/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Affiliate registration failed');
+    if (!res.ok) throw new ApiRequestError(json.error || 'Affiliate registration failed', { status: res.status });
     return json;
   },
 
@@ -424,7 +566,13 @@ export const api = {
       body: JSON.stringify({ email, password }),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Affiliate login failed');
+    if (!res.ok) {
+      throw new ApiRequestError(json.error || 'Affiliate login failed', {
+        status: res.status,
+        requiresVerification: json.requiresVerification,
+        email: json.email,
+      });
+    }
     return json;
   },
 
@@ -436,16 +584,26 @@ export const api = {
     });
   },
 
-  async getAffiliateDashboard(token: string): Promise<{
-    affiliate: Affiliate;
-    commissions: AffiliateCommission[];
-    withdrawals: AffiliateWithdrawal[];
-    ledger: AffiliateLedgerEntry[];
-    referredCustomers: ReferralAttribution[];
-  }> {
-    const res = await apiFetch(apiUrl('/api/affiliates/me'), {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  async getAffiliateDashboard(
+    token: string,
+    filters?: {
+      period?: DatePeriodFilter;
+      from?: string;
+      to?: string;
+      payoutFilter?: PayoutFilter;
+    }
+  ): Promise<AffiliateDashboardAnalytics> {
+    const qs = new URLSearchParams();
+    if (filters?.period) qs.set('period', filters.period);
+    if (filters?.from) qs.set('from', filters.from);
+    if (filters?.to) qs.set('to', filters.to);
+    if (filters?.payoutFilter) qs.set('payoutFilter', filters.payoutFilter);
+    const res = await apiFetch(
+      apiUrl(`/api/affiliates/me${qs.toString() ? `?${qs.toString()}` : ''}`),
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Failed to load affiliate dashboard');
     return json;
@@ -483,6 +641,15 @@ export const api = {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Failed to load orders');
     return json.orders;
+  },
+
+  async getAdminTransactions(token: string): Promise<PaymentTransaction[]> {
+    const res = await apiFetch(apiUrl('/api/admin/transactions'), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to load payment transactions');
+    return json.transactions || [];
   },
 
   async updateAdminOrder(token: string, orderId: string, updates: Partial<Order>): Promise<Order> {
@@ -748,6 +915,61 @@ export const api = {
     return json.affiliates;
   },
 
+  async getAdminAffiliateAnalytics(
+    token: string,
+    filters?: {
+      period?: DatePeriodFilter;
+      from?: string;
+      to?: string;
+      payoutFilter?: PayoutFilter;
+    }
+  ): Promise<AdminAffiliateAnalytics> {
+    const qs = new URLSearchParams();
+    if (filters?.period) qs.set('period', filters.period);
+    if (filters?.from) qs.set('from', filters.from);
+    if (filters?.to) qs.set('to', filters.to);
+    if (filters?.payoutFilter) qs.set('payoutFilter', filters.payoutFilter);
+    const res = await apiFetch(
+      apiUrl(`/api/admin/affiliates/analytics${qs.toString() ? `?${qs.toString()}` : ''}`),
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to load affiliate analytics');
+    return json;
+  },
+
+  async getAdminAffiliateDashboard(
+    token: string,
+    affiliateId: string,
+    filters?: {
+      period?: DatePeriodFilter;
+      from?: string;
+      to?: string;
+      payoutFilter?: PayoutFilter;
+    }
+  ): Promise<AffiliateDashboardAnalytics> {
+    const qs = new URLSearchParams();
+    if (filters?.period) qs.set('period', filters.period);
+    if (filters?.from) qs.set('from', filters.from);
+    if (filters?.to) qs.set('to', filters.to);
+    if (filters?.payoutFilter) qs.set('payoutFilter', filters.payoutFilter);
+    const res = await apiFetch(
+      apiUrl(
+        `/api/admin/affiliates/${encodeURIComponent(affiliateId)}/dashboard${
+          qs.toString() ? `?${qs.toString()}` : ''
+        }`
+      ),
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Failed to load affiliate dashboard');
+    return json;
+  },
+
   async getAdminReferredCustomers(token: string): Promise<ReferralAttribution[]> {
     const res = await apiFetch(apiUrl('/api/admin/referred-customers'), {
       headers: { Authorization: `Bearer ${token}` },
@@ -894,8 +1116,17 @@ export const api = {
     paid: boolean;
     order: Pick<
       Order,
-      'id' | 'customerName' | 'totalAmount' | 'paymentStatus' | 'fulfillmentStatus' | 'paymentMethod' | 'createdAt' | 'verifiedAt'
+      | 'id'
+      | 'customerName'
+      | 'totalAmount'
+      | 'paymentStatus'
+      | 'fulfillmentStatus'
+      | 'paymentMethod'
+      | 'paymentReference'
+      | 'createdAt'
+      | 'verifiedAt'
     >;
+    transaction?: PaymentTransaction;
     headline: string;
     instructions: string;
     primaryDestination?: {

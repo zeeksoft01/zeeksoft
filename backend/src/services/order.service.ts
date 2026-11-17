@@ -1,5 +1,11 @@
+import crypto from 'crypto';
 import { Order, OrderItem, PaymentMethod } from '../types';
-import { AffiliateCommissionModel, OrderModel, ReferralAttributionModel } from '../models';
+import {
+  AffiliateCommissionModel,
+  OrderModel,
+  PaymentTransactionModel,
+  ReferralAttributionModel,
+} from '../models';
 import { requireDatabaseConnection } from '../config/database';
 import { ApiError } from '../utils/ApiError';
 import { cryptoRandomHex, escapeRegExp } from '../utils/security';
@@ -245,7 +251,12 @@ export const orderService = {
     return docs.map(({ _id, ...rest }) => rest as Order);
   },
 
-  async updateOrder(id: string, updates: Partial<Order>, adminUser?: string): Promise<Order | null> {
+  async updateOrder(
+    id: string,
+    updates: Partial<Order>,
+    adminUser?: string,
+    options?: { skipDeliveryEmail?: boolean; skipCommission?: boolean }
+  ): Promise<Order | null> {
     requireDatabaseConnection();
     const existing = await this.getOrderById(id);
     if (!existing) return null;
@@ -253,26 +264,37 @@ export const orderService = {
     const previousStatus = existing.paymentStatus;
     const previousFulfillment = existing.fulfillmentStatus;
     const now = new Date().toISOString();
+    const isTransitioningToPaid = updates.paymentStatus === 'paid' && previousStatus !== 'paid';
 
     const finalUpdates: Partial<Order> = {
       ...updates,
       updatedAt: now,
     };
 
-    if (adminUser && updates.paymentStatus === 'paid' && previousStatus !== 'paid') {
+    if (adminUser && isTransitioningToPaid) {
       finalUpdates.verifiedBy = updates.verifiedBy || adminUser;
       finalUpdates.verifiedAt = updates.verifiedAt || now;
     }
 
+    const filter = isTransitioningToPaid
+      ? { id: existing.id, paymentStatus: { $ne: 'paid' as const } }
+      : { id: existing.id };
+
     const doc = await OrderModel.findOneAndUpdate(
-      { id: existing.id },
+      filter,
       { $set: finalUpdates },
       { new: true }
     ).lean();
-    const { _id, ...rest } = doc!;
+
+    if (!doc) {
+      // Another concurrent worker already transitioned this order to paid
+      return this.getOrderById(existing.id);
+    }
+
+    const { _id, ...rest } = doc;
     const updatedOrder = rest as Order;
 
-    if (adminUser && updates.paymentStatus === 'paid' && previousStatus !== 'paid') {
+    if (adminUser && isTransitioningToPaid) {
       await auditService.addLog(
         'Verify Payment',
         `Admin ${adminUser} verified order ${existing.id} for ₦${updatedOrder.totalAmount}`,
@@ -289,13 +311,52 @@ export const orderService = {
     }
 
     if (updatedOrder.paymentStatus === 'paid' && previousStatus !== 'paid') {
+      const txRef =
+        updatedOrder.paymentReference ||
+        updatedOrder.transactionHash ||
+        `${updatedOrder.id}-TX`;
+      await PaymentTransactionModel.findOneAndUpdate(
+        { reference: txRef },
+        {
+          $setOnInsert: {
+            id: `TX-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+            reference: txRef,
+            orderId: updatedOrder.id,
+            customerName: updatedOrder.customerName,
+            customerEmail: updatedOrder.customerEmail.trim().toLowerCase(),
+            amount: updatedOrder.totalAmount,
+            currency: 'NGN',
+            gateway: updatedOrder.paymentMethod,
+            status: 'success',
+            paidAt: updatedOrder.verifiedAt || now,
+            verifiedVia:
+              adminUser && adminUser.toLowerCase().includes('webhook')
+                ? 'webhook'
+                : adminUser && adminUser.toLowerCase().includes('paystack')
+                ? 'callback'
+                : 'admin',
+            createdAt: now,
+          },
+          $set: { updatedAt: now },
+        },
+        { upsert: true }
+      ).catch(console.error);
+
       await Promise.all([
         emailContactService.recordPurchaseCompletion(updatedOrder).catch(console.error),
-        deliveryService.handleOrderPaidTransition(updatedOrder).catch(console.error),
+        deliveryService
+          .handleOrderPaidTransition(updatedOrder, {
+            skipDeliveryEmail: options?.skipDeliveryEmail,
+          })
+          .catch(console.error),
       ]);
     }
 
-    if (updatedOrder.paymentStatus === 'paid' && !updatedOrder.commissionAwarded) {
+    if (
+      updatedOrder.paymentStatus === 'paid' &&
+      !updatedOrder.commissionAwarded &&
+      !options?.skipCommission
+    ) {
       await affiliateService.awardAffiliateCommission(updatedOrder);
       const refreshed = await this.getOrderById(updatedOrder.id);
       if (refreshed) return refreshed;

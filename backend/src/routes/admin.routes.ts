@@ -28,6 +28,7 @@ router.use('/admin', requireAdmin);
 
 router.get('/admin/dashboard', adminController.getDashboard);
 router.get('/admin/orders', adminController.getOrders);
+router.get('/admin/transactions', adminController.getTransactions);
 router.patch('/admin/orders/:orderId', validate(updateAdminOrderSchema), adminController.updateOrder);
 
 router.post('/admin/products', validate(createProductSchema), adminController.createProduct);
@@ -66,6 +67,8 @@ router.post('/admin/upload-image', validate(uploadImageSchema), adminController.
 
 // Admin Affiliate Management
 router.get('/admin/affiliates', adminController.getAffiliates);
+router.get('/admin/affiliates/analytics', adminController.getAffiliateAnalytics);
+router.get('/admin/affiliates/:affiliateId/dashboard', adminController.getAffiliateDashboardById);
 router.get('/admin/referred-customers', adminController.getReferredCustomers);
 router.post(
   '/admin/affiliates/:affiliateId/adjust-balance',

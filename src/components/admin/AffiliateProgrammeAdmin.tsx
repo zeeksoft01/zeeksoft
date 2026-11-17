@@ -2,12 +2,15 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Banknote,
   BookOpen,
+  Calendar,
   Check,
   CheckCircle,
+  Clock,
   Coins,
   Copy,
-  ExternalLink,
+  Eye,
   Image as ImageIcon,
   Link as LinkIcon,
   Loader2,
@@ -19,21 +22,29 @@ import {
   ToggleLeft,
   ToggleRight,
   Trash2,
+  TrendingUp,
   Upload,
   Users,
+  Wallet,
+  X,
+  XCircle,
 } from 'lucide-react';
 import {
+  AdminAffiliateAnalytics,
   Affiliate,
   AffiliateGuideConfig,
   AffiliateGuideSection,
   AffiliateHighlightItem,
   AffiliateWithdrawal,
+  DatePeriodFilter,
   LegalPolicies,
+  PayoutFilter,
   Product,
   ReferralAttribution,
   SiteSettings,
 } from '../../types';
 import { api } from '../../api/client';
+import { AffiliateDashboardView } from '../AffiliateDashboardView';
 
 interface AffiliateProgrammeAdminProps {
   settings: SiteSettings;
@@ -53,7 +64,8 @@ interface AffiliateProgrammeAdminProps {
   setSaveErrorMsg: (msg: string) => void;
   handleWithdrawalStatus: (
     withdrawalId: string,
-    status: AffiliateWithdrawal['status']
+    status: AffiliateWithdrawal['status'],
+    extra?: { rejectionReason?: string; transferReference?: string; adminNotes?: string }
   ) => Promise<void>;
 }
 
@@ -118,9 +130,29 @@ export const AffiliateProgrammeAdmin: React.FC<AffiliateProgrammeAdminProps> = (
   setSaveErrorMsg,
   handleWithdrawalStatus,
 }) => {
-  const [subTab, setSubTab] = useState<'commissions' | 'guide' | 'partners'>('commissions');
+  const [subTab, setSubTab] = useState<'commissions' | 'guide' | 'partners'>('partners');
   const [productSearch, setProductSearch] = useState('');
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  // Admin Affiliate Financial Analytics & Filters
+  const [analytics, setAnalytics] = useState<AdminAffiliateAnalytics | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [period, setPeriod] = useState<DatePeriodFilter>('all');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [payoutFilter, setPayoutFilter] = useState<PayoutFilter>('all');
+  const [inspectingAffiliateId, setInspectingAffiliateId] = useState<string | null>(null);
+  const [declineModal, setDeclineModal] = useState<{
+    withdrawal: AffiliateWithdrawal;
+    reason: string;
+    error: string;
+  } | null>(null);
+  const [markPaidModal, setMarkPaidModal] = useState<{
+    withdrawal: AffiliateWithdrawal;
+    transferReference: string;
+    adminNotes: string;
+  } | null>(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
 
   // Commission & Rule Draft State
   const [defaultRate, setDefaultRate] = useState<number>(settings.defaultCommissionRate ?? 0);
@@ -136,6 +168,33 @@ export const AffiliateProgrammeAdmin: React.FC<AffiliateProgrammeAdminProps> = (
   );
   const [isSavingGuide, setIsSavingGuide] = useState(false);
   const [uploadingTarget, setUploadingTarget] = useState<string | null>(null);
+
+  const loadAnalytics = async (
+    nextPeriod: DatePeriodFilter = period,
+    nextFrom: string = customFrom,
+    nextTo: string = customTo,
+    nextPayout: PayoutFilter = payoutFilter
+  ) => {
+    if (!token) return;
+    setAnalyticsLoading(true);
+    try {
+      const res = await api.getAdminAffiliateAnalytics(token, {
+        period: nextPeriod,
+        ...(nextPeriod === 'custom' && nextFrom ? { from: nextFrom } : {}),
+        ...(nextPeriod === 'custom' && nextTo ? { to: nextTo } : {}),
+        payoutFilter: nextPayout,
+      });
+      setAnalytics(res);
+    } catch (err: unknown) {
+      setSaveErrorMsg(err instanceof Error ? err.message : 'Failed to load affiliate analytics.');
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAnalytics(period, customFrom, customTo, payoutFilter);
+  }, [token, withdrawals.length, affiliates.length]);
 
   // Keep drafts synchronized when settings/products reload
   useEffect(() => {
@@ -404,13 +463,13 @@ export const AffiliateProgrammeAdmin: React.FC<AffiliateProgrammeAdminProps> = (
 
         <div className="inline-flex flex-wrap items-center gap-1.5 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-sm">
           {[
-            { id: 'commissions', label: 'Commission Rates & Recurring', icon: Percent },
-            { id: 'guide', label: 'How to Earn Guide CMS', icon: BookOpen },
             {
               id: 'partners',
-              label: `Partners & Attributions (${affiliates.length})`,
-              icon: Users,
+              label: `Analytics, Partners & Payouts (${affiliates.length})`,
+              icon: TrendingUp,
             },
+            { id: 'commissions', label: 'Commission Rates & Recurring', icon: Percent },
+            { id: 'guide', label: 'How to Earn Guide CMS', icon: BookOpen },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = subTab === tab.id;
@@ -1169,83 +1228,453 @@ export const AffiliateProgrammeAdmin: React.FC<AffiliateProgrammeAdminProps> = (
         </form>
       )}
 
-      {/* SUB-TAB 3: PARTNERS, REFERRED CUSTOMERS & PAYOUTS */}
+      {/* SUB-TAB 3: ADMIN AFFILIATE ANALYTICS, PARTNERS & PAYOUTS */}
       {subTab === 'partners' && (
         <div className="space-y-6">
-          {/* 1. Registered Affiliates */}
+          {/* Period & Payout Filter Bar */}
+          <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-sm space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5 mr-1">
+                  <Calendar className="w-3.5 h-3.5 text-[#FF7900]" />
+                  <span>Period Filter:</span>
+                </span>
+                {(
+                  [
+                    { id: 'all', label: 'All Time' },
+                    { id: 'today', label: 'Today' },
+                    { id: 'yesterday', label: 'Past (Yesterday)' },
+                    { id: 'weekly', label: 'This Week' },
+                    { id: 'monthly', label: 'This Month' },
+                    { id: 'custom', label: 'Custom Range' },
+                  ] as Array<{ id: DatePeriodFilter; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      setPeriod(opt.id);
+                      if (opt.id !== 'custom') {
+                        loadAnalytics(opt.id, customFrom, customTo, payoutFilter);
+                      }
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      period === opt.id
+                        ? 'bg-[#061B45] text-white'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={payoutFilter}
+                  onChange={(e) => {
+                    const next = e.target.value as PayoutFilter;
+                    setPayoutFilter(next);
+                    loadAnalytics(period, customFrom, customTo, next);
+                  }}
+                  className="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-[#061B45]"
+                >
+                  <option value="all">Payouts: All Records</option>
+                  <option value="upcoming">Payouts: Upcoming / Pending</option>
+                  <option value="completed">Payouts: Completed / Paid</option>
+                  <option value="previous">Payouts: Previous (Settled & Declined)</option>
+                  <option value="declined">Payouts: Declined Only</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => loadAnalytics(period, customFrom, customTo, payoutFilter)}
+                  disabled={analyticsLoading}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-[#061B45] flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${analyticsLoading ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {period === 'custom' && (
+              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+                <span className="text-[11px] font-bold text-slate-500">From:</span>
+                <input
+                  type="date"
+                  value={customFrom}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 bg-white"
+                />
+                <span className="text-[11px] font-bold text-slate-500">To:</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => loadAnalytics('custom', customFrom, customTo, payoutFilter)}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#FF7900] text-white text-xs font-bold"
+                >
+                  Apply Date Range
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 4 Admin Affiliate Financial Analytics Cards */}
+          {analytics?.summary && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <span>Total Affiliate Earnings</span>
+                  <TrendingUp className="w-4 h-4 text-[#061B45]" />
+                </div>
+                <div className="text-2xl font-black text-[#061B45] tabular-nums font-mono">
+                  ₦{analytics.summary.totalAffiliateEarnings.toLocaleString('en-NG')}
+                </div>
+                <p className="text-[11px] text-slate-500 tabular-nums">
+                  {analytics.summary.totalCommissionsCount} commissions ({period === 'all' ? 'All Time' : period})
+                </p>
+              </div>
+
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <span>Total Paid to Affiliates</span>
+                  <Banknote className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div className="text-2xl font-black text-emerald-700 tabular-nums font-mono">
+                  ₦{analytics.summary.totalAmountPaidToAffiliates.toLocaleString('en-NG')}
+                </div>
+                <p className="text-[11px] text-slate-500 tabular-nums">
+                  {analytics.summary.completedPayoutsCount} completed bank payouts
+                </p>
+              </div>
+
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <span>Total Yet to Be Paid</span>
+                  <Wallet className="w-4 h-4 text-[#FF7900]" />
+                </div>
+                <div className="text-2xl font-black text-[#FF7900] tabular-nums font-mono">
+                  ₦{analytics.summary.totalYetToBePaid.toLocaleString('en-NG')}
+                </div>
+                <p className="text-[11px] text-slate-500 tabular-nums">
+                  Wallets: ₦{analytics.summary.totalAvailableBalances.toLocaleString('en-NG')} + Pending: ₦{analytics.summary.totalPendingWithdrawalAmount.toLocaleString('en-NG')}
+                </p>
+              </div>
+
+              <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-sm space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <span>Partner Standing</span>
+                  <Users className="w-4 h-4 text-blue-600" />
+                </div>
+                <div className="text-2xl font-black text-blue-700 tabular-nums font-mono">
+                  {analytics.summary.totalAffiliatesCount}
+                </div>
+                <p className="text-[11px] text-slate-500 tabular-nums">
+                  {analytics.summary.activeAffiliatesCount} active •{' '}
+                  <strong className="text-amber-700">
+                    {analytics.summary.pendingReviewCount} pending payouts
+                  </strong>
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* 1. Affiliate Performance & Inspect Dashboard Table */}
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#061B45]">
-                Registered Affiliates & Personal Referral Links ({affiliates.length})
-              </h4>
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#061B45]">
+                  Affiliate Performance & Individual Dashboards (
+                  {analytics?.affiliatePerformance?.length ?? affiliates.length})
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Click "View Dashboard" on any partner to inspect their wallet, commission breakdown, withdrawals, and activity timeline.
+                </p>
+              </div>
             </div>
             <table className="w-full text-xs text-left">
               <thead className="bg-slate-50 text-slate-500 uppercase font-bold border-b border-slate-200">
                 <tr>
                   <th className="p-3">Partner</th>
                   <th className="p-3">Personal Affiliate Link</th>
-                  <th className="p-3">Clicks / Sales</th>
-                  <th className="p-3">Available</th>
-                  <th className="p-3">Total Earned</th>
+                  <th className="p-3">Period / All-Time Sales</th>
+                  <th className="p-3">Wallet Balance</th>
+                  <th className="p-3">Period Earned / Paid</th>
                   <th className="p-3">Bank Details</th>
+                  <th className="p-3 text-right">Inspect</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {affiliates.length === 0 ? (
+                {(analytics?.affiliatePerformance || []).length === 0 && affiliates.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-6 text-center text-slate-400">
+                    <td colSpan={7} className="p-6 text-center text-slate-400">
                       No affiliate partners registered yet.
                     </td>
                   </tr>
-                ) : (
-                  affiliates.map((aff) => (
-                    <tr key={aff._id} className="hover:bg-slate-50">
-                      <td className="p-3">
-                        <span className="font-bold text-slate-900 block">{aff.fullName}</span>
-                        <span className="text-[10px] text-slate-500 block">{aff.email}</span>
-                        <span className="text-[10px] font-mono text-slate-400 block">
-                          User _id: {aff.userId}
+                ) : (analytics?.affiliatePerformance?.length ? analytics.affiliatePerformance : affiliates.map((aff) => ({
+                  affiliateId: aff._id,
+                  userId: aff.userId,
+                  fullName: aff.fullName,
+                  email: aff.email,
+                  phone: aff.phone,
+                  referralCode: aff.referralCode,
+                  isVerified: true,
+                  status: 'active' as const,
+                  availableBalance: aff.availableBalance,
+                  reservedWithdrawalBalance: 0,
+                  totalEarned: aff.totalEarned,
+                  totalWithdrawn: aff.totalWithdrawn,
+                  periodEarnings: aff.totalEarned,
+                  periodCommissionsCount: aff.totalReferredSalesCount,
+                  periodPaid: aff.totalWithdrawn,
+                  periodPendingPayout: 0,
+                  periodClicksCount: aff.totalClicks,
+                  periodReferralsCount: 0,
+                  totalClicks: aff.totalClicks,
+                  totalReferredSalesCount: aff.totalReferredSalesCount,
+                  bankName: aff.bankName,
+                  accountNumber: aff.accountNumber,
+                  accountName: aff.accountName,
+                  createdAt: aff.createdAt,
+                }))).map((row) => (
+                  <tr key={row.affiliateId} className="hover:bg-slate-50">
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-slate-900">{row.fullName}</span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                            row.isVerified
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {row.isVerified ? 'Verified' : 'Unverified'}
                         </span>
-                      </td>
-                      <td className="p-3">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono font-bold text-[#FF7900]">
-                            ?ref={aff.referralCode}
+                      </div>
+                      <span className="text-[10px] text-slate-500 block font-mono">{row.email}</span>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-bold text-[#FF7900]">
+                          ?ref={row.referralCode}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => copyAffiliateLink(row.referralCode)}
+                          className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
+                          title="Copy Personal Affiliate Link"
+                        >
+                          {copiedCode === row.referralCode ? (
+                            <Check className="w-3 h-3 text-emerald-600" />
+                          ) : (
+                            <Copy className="w-3 h-3" />
+                          )}
+                        </button>
+                      </div>
+                    </td>
+                    <td className="p-3 font-mono tabular-nums text-[11px]">
+                      <span className="font-bold text-[#061B45] block">
+                        {row.periodCommissionsCount} commissions / {row.periodClicksCount} clicks
+                      </span>
+                      <span className="text-[10px] text-slate-400">
+                        All-time: {row.totalReferredSalesCount} sales
+                      </span>
+                    </td>
+                    <td className="p-3 font-bold text-emerald-700 font-mono tabular-nums">
+                      ₦{row.availableBalance.toLocaleString('en-NG')}
+                      {row.periodPendingPayout > 0 && (
+                        <span className="block text-[10px] text-amber-700 font-normal">
+                          Pending: ₦{row.periodPendingPayout.toLocaleString('en-NG')}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-3 font-mono tabular-nums text-[11px]">
+                      <span className="font-bold text-[#061B45] block">
+                        Earned: ₦{row.periodEarnings.toLocaleString('en-NG')}
+                      </span>
+                      <span className="text-[10px] text-slate-500">
+                        Paid: ₦{row.totalWithdrawn.toLocaleString('en-NG')}
+                      </span>
+                    </td>
+                    <td className="p-3 text-[11px] text-slate-600">
+                      {row.bankName} • {row.accountNumber} ({row.accountName})
+                    </td>
+                    <td className="p-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setInspectingAffiliateId(row.affiliateId)}
+                        className="px-2.5 py-1.5 rounded-lg bg-[#061B45] hover:bg-[#0c2a63] text-white text-[11px] font-bold inline-flex items-center gap-1"
+                      >
+                        <Eye className="w-3.5 h-3.5 text-[#FF9200]" />
+                        <span>View Dashboard</span>
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 2. Withdrawal Requests & Payout Audit */}
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#061B45]">
+                  Withdrawal Requests & Payout Records (
+                  {(analytics?.withdrawals ?? withdrawals).length})
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Approving or marking a withdrawal paid sends an email confirmation instructing the affiliate to check their bank account. Declining requires an explicit reason sent to the affiliate.
+                </p>
+              </div>
+            </div>
+            <table className="w-full text-xs text-left">
+              <thead className="bg-slate-50 text-slate-500 uppercase font-bold border-b border-slate-200">
+                <tr>
+                  <th className="p-3">Request ID</th>
+                  <th className="p-3">Affiliate & Bank</th>
+                  <th className="p-3">Amount</th>
+                  <th className="p-3">Status & Notes</th>
+                  <th className="p-3">Requested / Paid</th>
+                  <th className="p-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(analytics?.withdrawals ?? withdrawals).length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-6 text-center text-slate-400">
+                      No withdrawal requests match the selected date range or payout filter.
+                    </td>
+                  </tr>
+                ) : (
+                  (analytics?.withdrawals ?? withdrawals).map((w) => {
+                    const isPendingOrApproved =
+                      w.status === 'Pending Review' ||
+                      w.status === 'Approved' ||
+                      w.status === 'Processing Payment' ||
+                      w.status === 'Payment Sent';
+
+                    return (
+                      <tr key={w.id} className="hover:bg-slate-50">
+                        <td className="p-3 font-mono font-bold text-slate-900">
+                          <span className="block">{w.id}</span>
+                          {w.transferReference && (
+                            <span className="text-[10px] text-slate-500 font-normal">
+                              Ref: {w.transferReference}
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          <span className="font-bold text-[#061B45] block">{w.affiliateName}</span>
+                          <span className="text-[10px] text-slate-500 block">
+                            {w.bankName} • {w.accountNumber} ({w.accountName})
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => copyAffiliateLink(aff.referralCode)}
-                            className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700"
-                            title="Copy Personal Affiliate Link"
+                        </td>
+                        <td className="p-3 font-black text-[#FF7900] font-mono tabular-nums">
+                          ₦{w.amount.toLocaleString('en-NG')}
+                        </td>
+                        <td className="p-3 space-y-1">
+                          <span
+                            className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                              w.status === 'Withdrawal Successful'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : w.status === 'Declined'
+                                ? 'bg-red-100 text-red-700'
+                                : w.status === 'Approved'
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-amber-100 text-amber-800'
+                            }`}
                           >
-                            {copiedCode === aff.referralCode ? (
-                              <Check className="w-3 h-3 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3 h-3" />
+                            {w.status}
+                          </span>
+                          {w.rejectionReason && (
+                            <p className="text-[10px] text-red-700 max-w-xs">
+                              Reason: {w.rejectionReason}
+                            </p>
+                          )}
+                        </td>
+                        <td className="p-3 font-mono text-[11px] text-slate-500 tabular-nums">
+                          <span className="block">
+                            {(w.createdAt || '').replace('T', ' ').substring(0, 16)}
+                          </span>
+                          {w.paymentDate && (
+                            <span className="text-[10px] text-emerald-700 font-bold block">
+                              Paid: {w.paymentDate.replace('T', ' ').substring(0, 16)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="inline-flex flex-wrap items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setInspectingAffiliateId(w.affiliateId)}
+                              className="px-2 py-1 rounded bg-[#061B45] hover:bg-[#0c2a63] text-white text-[10px] font-bold inline-flex items-center gap-1"
+                              title="Open Affiliate Dashboard"
+                            >
+                              <Eye className="w-3 h-3 text-[#FF9200]" />
+                              <span>View Dashboard</span>
+                            </button>
+
+                            {w.status === 'Pending Review' && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await handleWithdrawalStatus(w.id, 'Approved');
+                                  loadAnalytics(period, customFrom, customTo, payoutFilter);
+                                }}
+                                className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold"
+                              >
+                                Approve
+                              </button>
                             )}
-                          </button>
-                        </div>
-                      </td>
-                      <td className="p-3 font-mono tabular-nums">
-                        {aff.totalClicks} clicks / {aff.totalReferredSalesCount} sales
-                      </td>
-                      <td className="p-3 font-bold text-emerald-700 font-mono tabular-nums">
-                        ₦{aff.availableBalance.toLocaleString('en-NG')}
-                      </td>
-                      <td className="p-3 font-bold text-[#061B45] font-mono tabular-nums">
-                        ₦{aff.totalEarned.toLocaleString('en-NG')}
-                      </td>
-                      <td className="p-3 text-[11px] text-slate-600">
-                        {aff.bankName} • {aff.accountNumber} ({aff.accountName})
-                      </td>
-                    </tr>
-                  ))
+
+                            {isPendingOrApproved && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setMarkPaidModal({
+                                    withdrawal: w,
+                                    transferReference: w.transferReference || '',
+                                    adminNotes: w.adminNotes || '',
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold"
+                              >
+                                Mark Paid
+                              </button>
+                            )}
+
+                            {isPendingOrApproved && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setDeclineModal({
+                                    withdrawal: w,
+                                    reason: '',
+                                    error: '',
+                                  })
+                                }
+                                className="px-2 py-1 rounded bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-bold"
+                              >
+                                Decline
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
           </div>
 
-          {/* 2. Persistent Customer Referral Attribution Table */}
+          {/* 3. Persistent Customer Referral Attribution Table */}
           <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
             <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -1320,76 +1749,215 @@ export const AffiliateProgrammeAdmin: React.FC<AffiliateProgrammeAdminProps> = (
               </tbody>
             </table>
           </div>
+        </div>
+      )}
 
-          {/* 3. Withdrawal Requests */}
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-x-auto">
-            <div className="p-4 border-b border-slate-100">
-              <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#061B45]">
-                Withdrawal Requests ({withdrawals.length})
-              </h4>
+      {/* Mandatory Decline Reason Modal */}
+      {declineModal && (
+        <div className="fixed inset-0 z-[75] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-red-600 flex items-center gap-1">
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>Decline Withdrawal Request</span>
+                </span>
+                <h4 className="text-base font-black text-[#061B45] mt-0.5">
+                  {declineModal.withdrawal.id} — ₦
+                  {declineModal.withdrawal.amount.toLocaleString('en-NG')}
+                </h4>
+                <p className="text-xs text-slate-500">
+                  Affiliate: {declineModal.withdrawal.affiliateName}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeclineModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <table className="w-full text-xs text-left">
-              <thead className="bg-slate-50 text-slate-500 uppercase font-bold border-b border-slate-200">
-                <tr>
-                  <th className="p-3">Request ID</th>
-                  <th className="p-3">Affiliate</th>
-                  <th className="p-3">Amount</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {withdrawals.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="p-6 text-center text-slate-400">
-                      No withdrawal requests submitted yet.
-                    </td>
-                  </tr>
-                ) : (
-                  withdrawals.map((w) => (
-                    <tr key={w.id} className="hover:bg-slate-50">
-                      <td className="p-3 font-mono font-bold text-slate-900">{w.id}</td>
-                      <td className="p-3">
-                        <span className="font-bold block">{w.affiliateName}</span>
-                        <span className="text-[10px] text-slate-500">
-                          {w.bankName} • {w.accountNumber}
-                        </span>
-                      </td>
-                      <td className="p-3 font-black text-[#FF7900] font-mono tabular-nums">
-                        ₦{w.amount.toLocaleString('en-NG')}
-                      </td>
-                      <td className="p-3">
-                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-800 text-[10px] font-bold">
-                          {w.status}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right space-x-1">
-                        {w.status === 'Pending Review' && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleWithdrawalStatus(w.id, 'Withdrawal Successful')}
-                              className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold"
-                            >
-                              Mark Paid
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleWithdrawalStatus(w.id, 'Declined')}
-                              className="px-2.5 py-1 rounded bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-bold"
-                            >
-                              Decline
-                            </button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+              Your reason will be emailed automatically to the affiliate, and ₦
+              {declineModal.withdrawal.amount.toLocaleString('en-NG')} will be refunded to their available wallet balance.
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold uppercase text-slate-700 mb-1">
+                Decline Reason (Required) <span className="text-red-500">*</span>
+              </label>
+              <textarea
+                rows={4}
+                required
+                value={declineModal.reason}
+                onChange={(e) =>
+                  setDeclineModal((prev) =>
+                    prev ? { ...prev, reason: e.target.value, error: '' } : null
+                  )
+                }
+                placeholder="Explain clearly why this withdrawal request is declined (e.g. Incorrect bank account name / suspected invalid referral)..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              {declineModal.error && (
+                <p className="text-[11px] text-red-600 font-semibold mt-1">
+                  {declineModal.error}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeclineModal(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionSubmitting}
+                onClick={async () => {
+                  const trimmed = declineModal.reason.trim();
+                  if (trimmed.length < 3) {
+                    setDeclineModal((prev) =>
+                      prev
+                        ? { ...prev, error: 'Please enter a clear decline reason (at least 3 characters).' }
+                        : null
+                    );
+                    return;
+                  }
+                  setActionSubmitting(true);
+                  try {
+                    await handleWithdrawalStatus(declineModal.withdrawal.id, 'Declined', {
+                      rejectionReason: trimmed,
+                    });
+                    setDeclineModal(null);
+                    await loadAnalytics(period, customFrom, customTo, payoutFilter);
+                  } finally {
+                    setActionSubmitting(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold uppercase disabled:opacity-50"
+              >
+                {actionSubmitting ? 'Declining...' : 'Confirm Decline & Email Reason'}
+              </button>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* Mark Paid / Transfer Reference Modal */}
+      {markPaidModal && (
+        <div className="fixed inset-0 z-[75] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-700 flex items-center gap-1">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Confirm Payout Sent</span>
+                </span>
+                <h4 className="text-base font-black text-[#061B45] mt-0.5">
+                  {markPaidModal.withdrawal.id} — ₦
+                  {markPaidModal.withdrawal.amount.toLocaleString('en-NG')}
+                </h4>
+                <p className="text-xs text-slate-500">
+                  {markPaidModal.withdrawal.bankName} • {markPaidModal.withdrawal.accountNumber} (
+                  {markPaidModal.withdrawal.accountName})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMarkPaidModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold uppercase text-slate-700 mb-1">
+                  Bank Transfer Reference (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={markPaidModal.transferReference}
+                  onChange={(e) =>
+                    setMarkPaidModal((prev) =>
+                      prev ? { ...prev, transferReference: e.target.value } : null
+                    )
+                  }
+                  placeholder="e.g. NIP-20261117-99421"
+                  className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-slate-300"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold uppercase text-slate-700 mb-1">
+                  Internal Admin Notes (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={markPaidModal.adminNotes}
+                  onChange={(e) =>
+                    setMarkPaidModal((prev) =>
+                      prev ? { ...prev, adminNotes: e.target.value } : null
+                    )
+                  }
+                  placeholder="e.g. Settled via GTBank Business"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMarkPaidModal(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionSubmitting}
+                onClick={async () => {
+                  setActionSubmitting(true);
+                  try {
+                    await handleWithdrawalStatus(
+                      markPaidModal.withdrawal.id,
+                      'Withdrawal Successful',
+                      {
+                        transferReference: markPaidModal.transferReference.trim() || undefined,
+                        adminNotes: markPaidModal.adminNotes.trim() || undefined,
+                      }
+                    );
+                    setMarkPaidModal(null);
+                    await loadAnalytics(period, customFrom, customTo, payoutFilter);
+                  } finally {
+                    setActionSubmitting(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold uppercase disabled:opacity-50"
+              >
+                {actionSubmitting ? 'Confirming...' : 'Confirm Paid & Notify Affiliate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Inspection Modal for Individual Affiliate Dashboard */}
+      {inspectingAffiliateId && (
+        <AffiliateDashboardView
+          mode="admin_inspect"
+          token={token}
+          affiliateId={inspectingAffiliateId}
+          settings={settings}
+          onClose={() => setInspectingAffiliateId(null)}
+        />
       )}
     </div>
   );

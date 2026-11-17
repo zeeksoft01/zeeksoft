@@ -11,3 +11,10 @@ export const verifyPaystackSchema = z.object({
     reference: z.string().trim().min(1, 'Transaction reference is required'),
   }),
 });
+
+export const lookupPaymentHistorySchema = z.object({
+  body: z.object({
+    query: z.string().trim().min(4, 'Order ID, transaction reference, or email is required'),
+  }),
+});
+

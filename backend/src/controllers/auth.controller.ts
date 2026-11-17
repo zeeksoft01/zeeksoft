@@ -9,6 +9,7 @@ import {
 } from '../middlewares/auth.middleware';
 import { affiliateService, uploadService, userService } from '../services';
 import { sanitizeUser } from '../services/user.service';
+import { getPublicAppUrl } from '../services/email.service';
 
 export const authController = {
   register: asyncHandler(async (req: Request, res: Response) => {
@@ -22,6 +23,7 @@ export const authController = {
       accountNumber?: string;
       accountName?: string;
       profilePicture?: string;
+      marketingConsent?: boolean;
     };
 
     const resolvedProfilePicture = body.profilePicture
@@ -38,11 +40,55 @@ export const authController = {
 
     res.status(201).json({
       success: true,
-      message: 'Affiliate partner account registered successfully.',
+      requiresVerification: result.requiresVerification,
+      email: result.email,
+      emailSent: result.emailSent,
+      message: result.emailSent
+        ? `Verification code sent to ${result.email}. Enter the 6-digit code to activate your affiliate account.`
+        : `Account registered for ${result.email}. Enter the verification code sent to your email to activate affiliate access.`,
+      user: result.user,
+      affiliate: result.affiliate,
+    });
+  }),
+
+  verifyEmail: asyncHandler(async (req: Request, res: Response) => {
+    const { email, code } = req.body as { email: string; code: string };
+    const result = await userService.verifyAffiliateEmailCode(email, code);
+    res.json({
+      success: true,
+      message: 'Email verified successfully! Your affiliate account is now active.',
       token: result.token,
       user: result.user,
       affiliate: result.affiliate,
     });
+  }),
+
+  resendVerification: asyncHandler(async (req: Request, res: Response) => {
+    const { email } = req.body as { email: string };
+    const result = await userService.resendAffiliateVerificationCode(email);
+    res.json(result);
+  }),
+
+  forgotPassword: asyncHandler(async (req: Request, res: Response) => {
+    const { email } = req.body as { email: string };
+    const result = await userService.requestPasswordReset(email, getPublicAppUrl());
+    res.json(result);
+  }),
+
+  resetPassword: asyncHandler(async (req: Request, res: Response) => {
+    const { email, code, token, newPassword } = req.body as {
+      email: string;
+      code?: string;
+      token?: string;
+      newPassword: string;
+    };
+    const result = await userService.resetPasswordWithTokenOrCode({
+      email,
+      code,
+      token,
+      newPassword,
+    });
+    res.json(result);
   }),
 
   login: asyncHandler(async (req: Request, res: Response) => {

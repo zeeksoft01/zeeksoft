@@ -67,9 +67,12 @@ export const orderController = {
 
   lookupOrders: asyncHandler(async (req: Request, res: Response) => {
     const orders = await orderService.lookupOrders(req.body.query);
+    const { paystackService } = await import('../services');
+    const transactions = await paystackService.lookupPaymentHistory(req.body.query).catch(() => []);
     res.json({
       success: true,
       orders: orders.map((o) => sanitizeOrderResponse(o, true)),
+      transactions,
     });
   }),
 

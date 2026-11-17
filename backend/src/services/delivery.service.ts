@@ -6,6 +6,7 @@ import {
   DestinationType,
   DigitalAsset,
   Order,
+  PaymentTransaction,
   PostPaymentConfig,
   Product,
   ProductDeliveryRecord,
@@ -14,6 +15,7 @@ import {
 import {
   DigitalAssetModel,
   OrderModel,
+  PaymentTransactionModel,
   ProductDeliveryRecordModel,
   ProductModel,
 } from '../models';
@@ -395,7 +397,10 @@ export const deliveryService = {
     return savedRecords;
   },
 
-  async handleOrderPaidTransition(order: Order): Promise<ProductDeliveryRecord[]> {
+  async handleOrderPaidTransition(
+    order: Order,
+    options?: { skipDeliveryEmail?: boolean }
+  ): Promise<ProductDeliveryRecord[]> {
     const records = await this.syncDeliveryRecordsForOrder(order);
     const appBase = getPublicAppUrl();
     const firstToken = records[0]?.downloadToken || '';
@@ -404,26 +409,28 @@ export const deliveryService = {
     }`;
     const hasDownloads = records.some((r) => r.destinationType === 'digital_download');
 
-    // Send automatic customer order confirmation & delivery email cleanly
-    await emailService
-      .notifyCustomerOrderDelivery({
-        orderId: order.id,
-        customerName: order.customerName,
-        customerEmail: order.customerEmail,
-        totalAmount: order.totalAmount,
-        items: order.items,
-        deliveryUrl: deliveryPageUrl,
-        hasDownloads,
-      })
-      .then(async (res) => {
-        if (res.sent) {
-          await ProductDeliveryRecordModel.updateMany(
-            { orderId: order.id, deliveryStatus: 'link_generated' },
-            { $set: { deliveryStatus: 'delivered', updatedAt: new Date().toISOString() } }
-          );
-        }
-      })
-      .catch(console.error);
+    if (!options?.skipDeliveryEmail) {
+      // Send automatic customer order confirmation & delivery email cleanly (manual payment verifications)
+      await emailService
+        .notifyCustomerOrderDelivery({
+          orderId: order.id,
+          customerName: order.customerName,
+          customerEmail: order.customerEmail,
+          totalAmount: order.totalAmount,
+          items: order.items,
+          deliveryUrl: deliveryPageUrl,
+          hasDownloads,
+        })
+        .then(async (res) => {
+          if (res.sent) {
+            await ProductDeliveryRecordModel.updateMany(
+              { orderId: order.id, deliveryStatus: 'link_generated' },
+              { $set: { deliveryStatus: 'delivered', updatedAt: new Date().toISOString() } }
+            );
+          }
+        })
+        .catch(console.error);
+    }
 
     // Send automatic Purchase Thank-You Email (atomically guarded against duplicate dispatch)
     await emailService.notifyCustomerPurchaseThankYou(order).catch(console.error);
@@ -438,8 +445,17 @@ export const deliveryService = {
     paid: boolean;
     order: Pick<
       Order,
-      'id' | 'customerName' | 'totalAmount' | 'paymentStatus' | 'fulfillmentStatus' | 'paymentMethod' | 'createdAt' | 'verifiedAt'
+      | 'id'
+      | 'customerName'
+      | 'totalAmount'
+      | 'paymentStatus'
+      | 'fulfillmentStatus'
+      | 'paymentMethod'
+      | 'paymentReference'
+      | 'createdAt'
+      | 'verifiedAt'
     >;
+    transaction?: PaymentTransaction;
     headline: string;
     instructions: string;
     primaryDestination?: {
@@ -557,6 +573,9 @@ export const deliveryService = {
       };
     });
 
+    const txDoc = await PaymentTransactionModel.findOne({ orderId: order.id }).sort({ paidAt: -1 }).lean();
+    const transaction = txDoc ? (({ _id, ...rest }) => rest as PaymentTransaction)(txDoc) : undefined;
+
     const firstEnabled = items.find((it) => it.downloadEnabled);
     return {
       paid: true,
@@ -567,9 +586,11 @@ export const deliveryService = {
         paymentStatus: order.paymentStatus,
         fulfillmentStatus: order.fulfillmentStatus,
         paymentMethod: order.paymentMethod,
+        paymentReference: order.paymentReference || transaction?.reference,
         createdAt: order.createdAt,
-        verifiedAt: order.verifiedAt,
+        verifiedAt: order.verifiedAt || transaction?.paidAt,
       },
+      transaction,
       headline: postCfg.downloadPageHeadline || 'Your Order Is Confirmed!',
       instructions:
         postCfg.downloadPageInstructions ||

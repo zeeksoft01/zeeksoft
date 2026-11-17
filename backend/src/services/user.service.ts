@@ -6,6 +6,7 @@ import {
   AffiliateLedgerModel,
   AffiliateModel,
   AffiliateWithdrawalModel,
+  AuthTokenModel,
   OrderModel,
   ReferralClickModel,
   UserModel,
@@ -16,7 +17,14 @@ import { ApiError } from '../utils/ApiError';
 import { auditService } from './audit.service';
 import { signAuthToken } from '../middlewares/auth.middleware';
 import { emailContactService } from './emailContact.service';
+import { emailService, getPublicAppUrl } from './email.service';
 import { safeTimingEqual } from '../utils/security';
+
+const sha256Hex = (value: string): string =>
+  crypto.createHash('sha256').update(value).digest('hex');
+
+const generateSixDigitCode = (): string =>
+  String(crypto.randomInt(100000, 1000000));
 
 export const hashUserPassword = (password: string): string => {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -371,21 +379,16 @@ export const userService = {
     accountName?: string;
     marketingConsent?: boolean;
   }): Promise<{
-    token: string;
+    requiresVerification: boolean;
+    email: string;
+    token?: string;
     user: Omit<SystemUser, 'passwordHash'>;
     affiliate: Affiliate | null;
+    emailSent: boolean;
   }> {
     requireDatabaseConnection();
     const cleanEmail = input.email.trim().toLowerCase();
     const existing = await UserModel.findOne({ email: cleanEmail }).lean();
-    if (existing) {
-      throw new ApiError(409, 'A user account with this email address already exists.');
-    }
-
-    const cleanName = input.fullName.trim();
-    if (!cleanName) {
-      throw new ApiError(400, 'Full name is required.');
-    }
 
     if (input.role === 'user') {
       throw new ApiError(
@@ -397,72 +400,511 @@ export const userService = {
       throw new ApiError(400, 'Admin accounts cannot be self-registered.');
     }
 
-    // Default role is 'affiliate'
-    const assignedRole: UserRole = 'affiliate';
+    const cleanName = input.fullName.trim();
+    if (!cleanName) {
+      throw new ApiError(400, 'Full name is required.');
+    }
+
     const now = new Date().toISOString();
+    let userDocToVerify: Omit<SystemUser, '_id'> & { _id: unknown };
 
-    const createdDoc = await UserModel.create({
-      fullName: cleanName,
-      name: cleanName,
-      email: cleanEmail,
-      phone: (input.phone || '').trim(),
-      passwordHash: hashUserPassword(input.password),
-      profilePicture: input.profilePicture,
-      role: assignedRole,
-      status: 'active',
-      isVerified: true,
-      isActive: true,
-      createdBy: 'Self Registration',
-      verifiedBy: 'Auto-Verified',
-      verifiedAt: now,
-      lastLoginAt: now,
-      createdAt: now,
-      updatedAt: now,
-    });
+    if (existing) {
+      if (existing.role === 'affiliate' && !existing.isVerified && existing.status === 'pending') {
+        const refreshed = await UserModel.findByIdAndUpdate(
+          existing._id,
+          {
+            $set: {
+              fullName: cleanName,
+              name: cleanName,
+              phone: (input.phone || existing.phone || '').trim(),
+              passwordHash: hashUserPassword(input.password),
+              ...(input.profilePicture ? { profilePicture: input.profilePicture } : {}),
+              updatedAt: now,
+            },
+          },
+          { new: true }
+        ).lean();
+        userDocToVerify = refreshed!;
+      } else {
+        throw new ApiError(409, 'A user account with this email address already exists.');
+      }
+    } else {
+      const createdDoc = await UserModel.create({
+        fullName: cleanName,
+        name: cleanName,
+        email: cleanEmail,
+        phone: (input.phone || '').trim(),
+        passwordHash: hashUserPassword(input.password),
+        profilePicture: input.profilePicture,
+        role: 'affiliate',
+        status: 'pending',
+        isVerified: false,
+        isActive: false,
+        createdBy: 'Self Registration',
+        verifiedBy: 'Pending Email Verification',
+        verifiedAt: '',
+        lastLoginAt: '',
+        createdAt: now,
+        updatedAt: now,
+      });
+      userDocToVerify = createdDoc.toObject();
+    }
 
-    const createdUserObj = createdDoc.toObject();
-    const userIdStr = String(createdUserObj._id);
-
+    const userIdStr = String(userDocToVerify._id);
     const affRecord = await this.ensureAffiliateProfile(userIdStr, {
       bankName: input.bankName,
       accountNumber: input.accountNumber,
       accountName: input.accountName,
     });
-    const affiliateDto = composeAffiliateDto(affRecord, createdUserObj);
+    const affiliateDto = composeAffiliateDto(affRecord, userDocToVerify);
+
+    // Issue single-use 20-minute email verification code (invalidate prior unused codes for this email)
+    const code = generateSixDigitCode();
+    const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+    await AuthTokenModel.updateMany(
+      { email: cleanEmail, purpose: 'email_verify', usedAt: null },
+      { $set: { usedAt: now } }
+    );
+    await AuthTokenModel.create({
+      id: `tok-ev-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      userId: userIdStr,
+      email: cleanEmail,
+      purpose: 'email_verify',
+      codeHash: sha256Hex(code),
+      attempts: 0,
+      maxAttempts: 5,
+      expiresAt,
+      usedAt: null,
+      createdAt: now,
+    });
+
+    const mailRes = await emailService
+      .sendAffiliateVerificationEmail({
+        fullName: cleanName,
+        email: cleanEmail,
+        code,
+        expiresInMinutes: 20,
+      })
+      .catch((err) => ({ sent: false, error: String(err) }));
 
     await emailContactService
       .upsertCollectedEmail({
         email: cleanEmail,
         fullName: cleanName,
         whatsApp: input.phone,
-        source: assignedRole === 'affiliate' ? 'affiliate_registration' : 'customer_registration',
-        categories:
-          assignedRole === 'affiliate' ? ['Affiliates', 'Newly Registered Affiliates'] : undefined,
+        source: 'affiliate_registration',
+        categories: ['Affiliates', 'Newly Registered Affiliates'],
         userId: userIdStr,
-        affiliateId: assignedRole === 'affiliate' ? affiliateDto._id : undefined,
+        affiliateId: affiliateDto._id,
         explicitOptIn: Boolean(input.marketingConsent),
         consentSource: input.marketingConsent ? 'registration_opt_in' : undefined,
       })
       .catch(console.error);
 
     await auditService.addLog(
-      'Affiliate Registered',
-      `New ${assignedRole} registered: ${cleanEmail} (User ID: ${userIdStr})`,
+      'Affiliate Verification Code Sent',
+      `Pending affiliate verification created for ${cleanEmail} (User ID: ${userIdStr})`,
       'System'
     );
 
+    return {
+      requiresVerification: true,
+      email: cleanEmail,
+      user: sanitizeUser(userDocToVerify),
+      affiliate: affiliateDto,
+      emailSent: Boolean(mailRes?.sent),
+    };
+  },
+
+  async verifyAffiliateEmailCode(
+    email: string,
+    code: string
+  ): Promise<{
+    token: string;
+    user: Omit<SystemUser, 'passwordHash'>;
+    affiliate: Affiliate;
+  }> {
+    requireDatabaseConnection();
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanCode = code.trim();
+    const now = new Date().toISOString();
+
+    const userDoc = await UserModel.findOne({ email: cleanEmail }).lean();
+    if (!userDoc || userDoc.role !== 'affiliate') {
+      throw new ApiError(404, 'No affiliate registration found for that email address.');
+    }
+    if (userDoc.status === 'suspended' || userDoc.status === 'disabled') {
+      throw new ApiError(403, `Your account is "${userDoc.status}" and cannot be verified.`);
+    }
+
+    const tokenDoc = await AuthTokenModel.findOne({
+      email: cleanEmail,
+      purpose: 'email_verify',
+      usedAt: null,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!tokenDoc) {
+      throw new ApiError(
+        400,
+        'No active verification code found. Please click "Resend Verification Code".'
+      );
+    }
+    if (tokenDoc.expiresAt <= now) {
+      await AuthTokenModel.updateOne({ id: tokenDoc.id }, { $set: { usedAt: now } });
+      throw new ApiError(
+        400,
+        'Your verification code has expired. Please request a new verification code.'
+      );
+    }
+    if (tokenDoc.attempts >= tokenDoc.maxAttempts) {
+      await AuthTokenModel.updateOne({ id: tokenDoc.id }, { $set: { usedAt: now } });
+      throw new ApiError(
+        400,
+        'Maximum verification attempts exceeded. Please request a new verification code.'
+      );
+    }
+
+    const candidateHash = sha256Hex(cleanCode);
+    if (!safeTimingEqual(candidateHash, tokenDoc.codeHash)) {
+      const incremented = await AuthTokenModel.findOneAndUpdate(
+        { id: tokenDoc.id },
+        { $inc: { attempts: 1 } },
+        { new: true }
+      ).lean();
+      if (incremented && incremented.attempts >= incremented.maxAttempts) {
+        await AuthTokenModel.updateOne({ id: tokenDoc.id }, { $set: { usedAt: now } });
+        throw new ApiError(
+          400,
+          'Too many invalid code attempts. Please request a new verification code.'
+        );
+      }
+      throw new ApiError(400, 'Invalid verification code. Please check your email and try again.');
+    }
+
+    // Consume verification token atomically (single-use)
+    const consumed = await AuthTokenModel.findOneAndUpdate(
+      { id: tokenDoc.id, usedAt: null },
+      { $set: { usedAt: now } },
+      { new: true }
+    ).lean();
+    if (!consumed) {
+      throw new ApiError(400, 'This verification code has already been used.');
+    }
+
+    await AuthTokenModel.updateMany(
+      { email: cleanEmail, purpose: 'email_verify', usedAt: null },
+      { $set: { usedAt: now } }
+    );
+
+    const updatedUserDoc = await UserModel.findByIdAndUpdate(
+      userDoc._id,
+      {
+        $set: {
+          status: 'active',
+          isVerified: true,
+          isActive: true,
+          verifiedBy: 'Email Code Verification',
+          verifiedAt: now,
+          lastLoginAt: now,
+          updatedAt: now,
+        },
+      },
+      { new: true }
+    ).lean();
+
+    const cleanUser = sanitizeUser(updatedUserDoc!);
+    const affRecord = await this.ensureAffiliateProfile(cleanUser._id);
+    const affiliateDto = composeAffiliateDto(affRecord, cleanUser);
+
+    emailService
+      .sendAffiliateActivatedEmail({
+        fullName: cleanUser.fullName,
+        email: cleanUser.email,
+        referralCode: affiliateDto.referralCode,
+      })
+      .catch(console.error);
+
+    await auditService.addLog(
+      'Affiliate Email Verified',
+      `Affiliate ${cleanEmail} (${cleanUser._id}) confirmed email ownership and activated account`,
+      cleanEmail
+    );
+
     const token = signAuthToken({
-      _id: userIdStr,
-      email: createdUserObj.email,
-      name: cleanName,
-      role: createdUserObj.role,
+      _id: cleanUser._id,
+      email: cleanUser.email,
+      name: cleanUser.fullName || cleanUser.email,
+      role: cleanUser.role,
       authType: 'db_user',
     });
 
     return {
       token,
-      user: sanitizeUser(createdUserObj),
+      user: cleanUser,
       affiliate: affiliateDto,
+    };
+  },
+
+  async resendAffiliateVerificationCode(
+    email: string
+  ): Promise<{ success: boolean; emailSent: boolean; message: string }> {
+    requireDatabaseConnection();
+    const cleanEmail = email.trim().toLowerCase();
+    const userDoc = await UserModel.findOne({ email: cleanEmail }).lean();
+
+    if (!userDoc || userDoc.role !== 'affiliate') {
+      throw new ApiError(404, 'No affiliate account found for that email address.');
+    }
+    if (userDoc.isVerified && userDoc.status === 'active') {
+      throw new ApiError(400, 'This email address is already verified. Please sign in.');
+    }
+    if (userDoc.status === 'suspended' || userDoc.status === 'disabled') {
+      throw new ApiError(403, `Your account status is "${userDoc.status}".`);
+    }
+
+    const latest = await AuthTokenModel.findOne({
+      email: cleanEmail,
+      purpose: 'email_verify',
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (latest) {
+      const elapsedMs = Date.now() - new Date(latest.createdAt).getTime();
+      if (elapsedMs < 30_000) {
+        const waitSec = Math.ceil((30_000 - elapsedMs) / 1000);
+        throw new ApiError(
+          429,
+          `Please wait ${waitSec} seconds before requesting another verification code.`
+        );
+      }
+    }
+
+    const now = new Date().toISOString();
+    const code = generateSixDigitCode();
+    const expiresAt = new Date(Date.now() + 20 * 60 * 1000).toISOString();
+
+    await AuthTokenModel.updateMany(
+      { email: cleanEmail, purpose: 'email_verify', usedAt: null },
+      { $set: { usedAt: now } }
+    );
+
+    await AuthTokenModel.create({
+      id: `tok-ev-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      userId: String(userDoc._id),
+      email: cleanEmail,
+      purpose: 'email_verify',
+      codeHash: sha256Hex(code),
+      attempts: 0,
+      maxAttempts: 5,
+      expiresAt,
+      usedAt: null,
+      createdAt: now,
+    });
+
+    const mailRes = await emailService
+      .sendAffiliateVerificationEmail({
+        fullName: userDoc.fullName || userDoc.name || 'Partner',
+        email: cleanEmail,
+        code,
+        expiresInMinutes: 20,
+      })
+      .catch(() => ({ sent: false }));
+
+    return {
+      success: true,
+      emailSent: Boolean(mailRes?.sent),
+      message: mailRes?.sent
+        ? `A new verification code has been sent to ${cleanEmail}.`
+        : 'Verification code regenerated. Email delivery may be delayed; verify SMTP/Brevo settings if needed.',
+    };
+  },
+
+  async requestPasswordReset(
+    email: string,
+    appOrigin?: string
+  ): Promise<{ success: boolean; message: string }> {
+    requireDatabaseConnection();
+    const cleanEmail = email.trim().toLowerCase();
+    const genericMsg =
+      'If an account exists for that email address, a one-time password reset code and link have been sent.';
+
+    const userDoc = await UserModel.findOne({ email: cleanEmail }).lean();
+    if (!userDoc || userDoc.status === 'suspended' || userDoc.status === 'disabled') {
+      return { success: true, message: genericMsg };
+    }
+
+    const latest = await AuthTokenModel.findOne({
+      email: cleanEmail,
+      purpose: 'password_reset',
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (latest) {
+      const elapsedMs = Date.now() - new Date(latest.createdAt).getTime();
+      if (elapsedMs < 30_000) {
+        return { success: true, message: genericMsg };
+      }
+    }
+
+    const now = new Date().toISOString();
+    const code = generateSixDigitCode();
+    const rawUrlToken = crypto.randomBytes(24).toString('hex');
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    await AuthTokenModel.updateMany(
+      { email: cleanEmail, purpose: 'password_reset', usedAt: null },
+      { $set: { usedAt: now } }
+    );
+
+    await AuthTokenModel.create({
+      id: `tok-pr-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`,
+      userId: String(userDoc._id),
+      email: cleanEmail,
+      purpose: 'password_reset',
+      codeHash: sha256Hex(code),
+      tokenHash: sha256Hex(rawUrlToken),
+      attempts: 0,
+      maxAttempts: 5,
+      expiresAt,
+      usedAt: null,
+      createdAt: now,
+    });
+
+    const base = (appOrigin || getPublicAppUrl()).replace(/\/$/, '');
+    const resetUrl = `${base}/?resetToken=${encodeURIComponent(
+      rawUrlToken
+    )}&email=${encodeURIComponent(cleanEmail)}`;
+
+    await emailService
+      .sendPasswordResetEmail({
+        fullName: userDoc.fullName || userDoc.name || 'Valued User',
+        email: cleanEmail,
+        code,
+        resetUrl,
+        expiresInMinutes: 15,
+      })
+      .catch(console.error);
+
+    await auditService.addLog(
+      'Password Reset Requested',
+      `One-time password reset code generated for ${cleanEmail}`,
+      cleanEmail
+    );
+
+    return { success: true, message: genericMsg };
+  },
+
+  async resetPasswordWithTokenOrCode(input: {
+    email: string;
+    code?: string;
+    token?: string;
+    newPassword: string;
+  }): Promise<{ success: boolean; message: string }> {
+    requireDatabaseConnection();
+    const cleanEmail = input.email.trim().toLowerCase();
+    const candidate = (input.token || input.code || '').trim();
+    const now = new Date().toISOString();
+
+    if (!candidate) {
+      throw new ApiError(400, 'Please enter your reset code or open your reset link.');
+    }
+
+    const userDoc = await UserModel.findOne({ email: cleanEmail }).lean();
+    if (!userDoc || userDoc.status === 'suspended' || userDoc.status === 'disabled') {
+      throw new ApiError(
+        400,
+        'Invalid, expired, or already used password reset code. Please request a new one.'
+      );
+    }
+
+    const tokenDoc = await AuthTokenModel.findOne({
+      email: cleanEmail,
+      purpose: 'password_reset',
+      usedAt: null,
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!tokenDoc || tokenDoc.expiresAt <= now || tokenDoc.attempts >= tokenDoc.maxAttempts) {
+      if (tokenDoc && tokenDoc.usedAt === null) {
+        await AuthTokenModel.updateOne({ id: tokenDoc.id }, { $set: { usedAt: now } });
+      }
+      throw new ApiError(
+        400,
+        'Invalid, expired, or already used password reset code. Please request a new one.'
+      );
+    }
+
+    const candidateHash = sha256Hex(candidate);
+    const matchesCode = safeTimingEqual(candidateHash, tokenDoc.codeHash);
+    const matchesToken = Boolean(
+      tokenDoc.tokenHash && safeTimingEqual(candidateHash, tokenDoc.tokenHash)
+    );
+
+    if (!matchesCode && !matchesToken) {
+      const incremented = await AuthTokenModel.findOneAndUpdate(
+        { id: tokenDoc.id },
+        { $inc: { attempts: 1 } },
+        { new: true }
+      ).lean();
+      if (incremented && incremented.attempts >= incremented.maxAttempts) {
+        await AuthTokenModel.updateOne({ id: tokenDoc.id }, { $set: { usedAt: now } });
+      }
+      throw new ApiError(
+        400,
+        'Invalid or expired password reset code. Please check your email or request a new code.'
+      );
+    }
+
+    // Atomically mark token as used so it can never be reused
+    const consumed = await AuthTokenModel.findOneAndUpdate(
+      { id: tokenDoc.id, usedAt: null, expiresAt: { $gt: now } },
+      { $set: { usedAt: now } },
+      { new: true }
+    ).lean();
+
+    if (!consumed) {
+      throw new ApiError(
+        400,
+        'This password reset link or code has expired or already been used.'
+      );
+    }
+
+    await AuthTokenModel.updateMany(
+      { email: cleanEmail, purpose: 'password_reset', usedAt: null },
+      { $set: { usedAt: now } }
+    );
+
+    await UserModel.updateOne(
+      { _id: userDoc._id },
+      {
+        $set: {
+          passwordHash: hashUserPassword(input.newPassword),
+          updatedAt: now,
+        },
+      }
+    );
+
+    emailService
+      .sendPasswordChangedEmail({
+        fullName: userDoc.fullName || userDoc.name || 'Valued User',
+        email: cleanEmail,
+      })
+      .catch(console.error);
+
+    await auditService.addLog(
+      'Password Reset Completed',
+      `Password reset successfully for ${cleanEmail}`,
+      cleanEmail
+    );
+
+    return {
+      success: true,
+      message: 'Your password has been updated. You can now sign in with your new password.',
     };
   },
 
@@ -480,6 +922,14 @@ export const userService = {
 
     if (!doc || !verifyUserPassword(password, doc.passwordHash)) {
       throw new ApiError(401, 'Invalid email or password.');
+    }
+
+    if (doc.role === 'affiliate' && (doc.isVerified !== true || doc.status === 'pending')) {
+      throw new ApiError(
+        403,
+        'Your affiliate email is not verified yet. Please enter the verification code sent to your email.',
+        { requiresVerification: true, email: cleanEmail }
+      );
     }
 
     if (doc.status !== 'active' || doc.isActive === false) {
